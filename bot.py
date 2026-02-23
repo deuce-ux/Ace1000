@@ -24,6 +24,17 @@ logging.basicConfig(level=logging.INFO)
 
 DATA_FILE = "ace1000_data.json"
 
+STYLE = """
+IMPORTANT FORMATTING RULES — FOLLOW STRICTLY:
+- Do NOT use markdown symbols like **, ###, *, or __ anywhere
+- Do NOT use bullet points with * or -
+- Use emojis and plain text only
+- Use clean dividers like ━━━━━━━━━━━━━━━━━━━━
+- Every pick MUST include detailed reasoning with H2H stats, form, and verdict
+- Be confident and direct like a professional analyst
+- Address the user by name naturally
+"""
+
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
@@ -114,157 +125,202 @@ def build_odds_prompt(data, bankroll, mode="full"):
     s2 = format_naira(br * 0.02) if br > 0 else "Set bankroll first"
     s3 = format_naira(br * 0.03) if br > 0 else "Set bankroll first"
     s5 = format_naira(br * 0.05) if br > 0 else "Set bankroll first"
-    bankroll_info = f"Punter name: {name}\nBankroll: {format_naira(br)}\n2%={s2} | 3%={s3} | 5%={s5}"
+    bankroll_info = f"Punter name: {name}. Bankroll: {format_naira(br)}. 2%={s2}, 3%={s3}, 5%={s5}"
 
     if mode == "safe":
-        return f"""You are Ace1000, a football betting analyst for a Nigerian SportyBet punter named {name}.
+        return f"""{STYLE}
+You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
 {bankroll_info}
-Give ONLY safe low risk bets with odds between 1.20 and 1.75.
-Focus on: Over 1.5 goals, BTTS Yes, Double Chance, strong favorites.
-Address the user as {name} naturally.
 
-Format EXACTLY:
+Give 3 SAFE picks with odds 1.20-1.75 only. Focus on Over 1.5, BTTS, Double Chance, strong favorites.
+For EACH pick provide deep reasoning including H2H record, recent form, and clear verdict.
 
-🛡️ ACE1000 SAFE PICKS
-Hey {name}! High confidence. Low risk. SportyBet ready.
+Use EXACTLY this format for each pick:
 
 ━━━━━━━━━━━━━━━━━━━━
-✅ Pick 1
+✅ PICK [number]
 Match: [Team A vs Team B]
 Bet: [e.g. Over 1.5 Goals]
 Odds: [1.20-1.75]
 Confidence: [85-95%]
 Stake: 5% = {s5}
-Reason: [One sentence]
 
-✅ Pick 2
-Match: [Team A vs Team B]
-Bet: [e.g. BTTS Yes]
-Odds: [1.20-1.75]
-Confidence: [85-95%]
-Stake: 5% = {s5}
-Reason: [One sentence]
+📊 ACE1000 ANALYSIS:
+H2H: [Head to head record e.g. Team A won 8 of last 10]
+Form: [Recent form of both teams e.g. Team A WWWDL, Team B LLDWL]
+Key Stat: [One powerful statistic]
+Verdict: [Clear confident one sentence conclusion]
 
-✅ Pick 3
-Match: [Team A vs Team B]
-Bet: [e.g. Double Chance]
-Odds: [1.20-1.75]
-Confidence: [85-95%]
-Stake: 5% = {s5}
-Reason: [One sentence]
-
+Risk Level: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
+
+After all 3 picks add:
+
 🔗 SAFE COMBO
-Combine all 3 above:
-Combined Odds: [X.XX]
+Combine all 3 picks above on SportyBet:
+Combined Odds: [multiply all 3]
 Stake: 5% = {s5}
-⚠️ Bet responsibly on SportyBet!
+Potential Return: [combined odds x stake amount]
+
+⚠️ Bet responsibly. Never stake what you cannot afford to lose.
 
 Odds data: {str(data[:3])}"""
 
     elif mode == "combo":
-        return f"""You are Ace1000, a football betting analyst for a Nigerian SportyBet punter named {name}.
+        return f"""{STYLE}
+You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
 {bankroll_info}
-Build 3 combo bets. Address {name} naturally.
 
-Format EXACTLY:
+Build 3 combo bets of different risk levels with clear reasoning for each leg.
+
+Use EXACTLY this format:
 
 🔗 ACE1000 COMBO BETS
-{name}, here are your combos! Ready for SportyBet 🇳🇬
+Hey {name}! Here are your combos for SportyBet 🇳🇬
 
 ━━━━━━━━━━━━━━━━━━━━
-COMBO 1 - BANKER 🏦 (Safest)
-Leg 1: [Match - Bet @ Odds]
-Leg 2: [Match - Bet @ Odds]
-Leg 3: [Match - Bet @ Odds]
+COMBO 1 - BANKER 🏦
+Risk: Very Low 🟢
+
+Leg 1: [Match - Bet @ Odds] — [One sentence why]
+Leg 2: [Match - Bet @ Odds] — [One sentence why]
+Leg 3: [Match - Bet @ Odds] — [One sentence why]
+
 Combined Odds: [X.XX]
 Stake: 5% = {s5}
-Win Chance: Very High
+Potential Return: [combined odds x stake]
+Win Probability: Very High
 
 ━━━━━━━━━━━━━━━━━━━━
-COMBO 2 - BALANCED ⚖️ (Medium)
-Leg 1: [Match - Bet @ Odds]
-Leg 2: [Match - Bet @ Odds]
-Leg 3: [Match - Bet @ Odds]
+COMBO 2 - BALANCED ⚖️
+Risk: Medium 🟡
+
+Leg 1: [Match - Bet @ Odds] — [One sentence why]
+Leg 2: [Match - Bet @ Odds] — [One sentence why]
+Leg 3: [Match - Bet @ Odds] — [One sentence why]
+
 Combined Odds: [X.XX]
 Stake: 3% = {s3}
-Win Chance: High
+Potential Return: [combined odds x stake]
+Win Probability: High
 
 ━━━━━━━━━━━━━━━━━━━━
-COMBO 3 - JACKPOT 💥 (Higher risk)
-Leg 1: [Match - Bet @ Odds]
-Leg 2: [Match - Bet @ Odds]
-Leg 3: [Match - Bet @ Odds]
-Leg 4: [Match - Bet @ Odds]
+COMBO 3 - JACKPOT 💥
+Risk: Higher 🔴
+
+Leg 1: [Match - Bet @ Odds] — [One sentence why]
+Leg 2: [Match - Bet @ Odds] — [One sentence why]
+Leg 3: [Match - Bet @ Odds] — [One sentence why]
+Leg 4: [Match - Bet @ Odds] — [One sentence why]
+
 Combined Odds: [X.XX]
 Stake: 2% = {s2}
-Win Chance: Medium
+Potential Return: [combined odds x stake]
+Win Probability: Medium
 
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ Always bet responsibly on SportyBet!
+⚠️ Always bet responsibly on SportyBet, {name}!
 
 Odds data: {str(data[:3])}"""
 
     else:
-        return f"""You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
+        return f"""{STYLE}
+You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
 {bankroll_info}
-Address {name} naturally throughout. Give a FULL daily betting card.
 
-Format EXACTLY:
+Give a FULL daily betting card with deep reasoning for every single pick.
+Every pick must include H2H, form, key stat and verdict.
+
+Use EXACTLY this format:
 
 🎯 ACE1000 DAILY BETTING CARD
-Hey {name}! Here are today's picks 🇳🇬
+Hey {name}! Here are today's best picks 🇳🇬
 
 ━━━━━━━━━━━━━━━━━━━━
 🛡️ SAFE PICKS (Odds 1.20 - 1.75)
 
-✅ Pick 1
+✅ SAFE PICK 1
 Match: [Team A vs Team B]
 Bet: [e.g. Over 1.5 Goals]
 Odds: [1.20-1.75]
 Stake: 5% = {s5}
-Reason: [One sentence]
 
-✅ Pick 2
+📊 ACE1000 ANALYSIS:
+H2H: [Record]
+Form: [Both teams recent form]
+Key Stat: [Powerful stat]
+Verdict: [Confident conclusion]
+
+Risk: Low 🟢
+
+━━━━━━━━━━━━━━━━━━━━
+✅ SAFE PICK 2
 Match: [Team A vs Team B]
 Bet: [e.g. BTTS Yes]
 Odds: [1.20-1.75]
 Stake: 5% = {s5}
-Reason: [One sentence]
+
+📊 ACE1000 ANALYSIS:
+H2H: [Record]
+Form: [Both teams recent form]
+Key Stat: [Powerful stat]
+Verdict: [Confident conclusion]
+
+Risk: Low 🟢
 
 ━━━━━━━━━━━━━━━━━━━━
 🎯 VALUE PICKS (Odds 1.80 - 2.50)
 
-⭐ Pick 1
+⭐ VALUE PICK 1
 Match: [Team A vs Team B]
 Bet: [Your pick]
 Odds: [1.80-2.50]
 Stake: 3% = {s3}
-Reason: [One sentence]
-Risk: Medium
+
+📊 ACE1000 ANALYSIS:
+H2H: [Record]
+Form: [Both teams recent form]
+Key Stat: [Powerful stat]
+Verdict: [Confident conclusion]
+
+Risk: Medium 🟡
 
 ━━━━━━━━━━━━━━━━━━━━
 🔗 COMBO BETS
 
 COMBO 1 - BANKER 🏦
-Leg 1: [Match - Bet @ Odds]
-Leg 2: [Match - Bet @ Odds]
-Leg 3: [Match - Bet @ Odds]
+Leg 1: [Match - Bet @ Odds] — [Why]
+Leg 2: [Match - Bet @ Odds] — [Why]
+Leg 3: [Match - Bet @ Odds] — [Why]
 Combined Odds: [X.XX]
 Stake: 5% = {s5}
+Potential Return: [combined odds x stake]
 
 COMBO 2 - VALUE ⭐
-Leg 1: [Match - Bet @ Odds]
-Leg 2: [Match - Bet @ Odds]
+Leg 1: [Match - Bet @ Odds] — [Why]
+Leg 2: [Match - Bet @ Odds] — [Why]
 Combined Odds: [X.XX]
 Stake: 3% = {s3}
+Potential Return: [combined odds x stake]
 
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ Bet responsibly {name}. Never stake more than you can afford to lose.
 
 Odds data: {str(data[:3])}"""
 
-# ─── COMMANDS ───────────────────────────────────────────────
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    data["chat_id"] = update.effective_chat.id
+    save_data(data)
+    name = data.get("name", "Champ")
+    bankroll = data.get("bankroll", 0)
+    bankroll_status = format_naira(bankroll) if bankroll > 0 else "Not set"
+    await update.message.reply_text(
+        f"👋 Welcome to Ace1000, {name}!\n\n"
+        f"Your personal SportyBet analyst 🇳🇬\n\n"
+        f"💰 Bankroll: {bankroll_status}\n\n"
+        f"Type /home to see all commands!"
+    )
 
 async def home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
@@ -280,25 +336,25 @@ async def home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 PROFILE\n"
         f"/setname [name] — Set your name\n"
         f"/bankroll [amount] — Set your bankroll\n"
-        f"/mystats — View your full stats\n"
+        f"/mystats — Full performance stats\n"
         f"/history — Bankroll history\n\n"
         f"⚽ BETTING PICKS\n"
         f"/odds — Full daily betting card\n"
         f"/safe — Safe picks only (1.20-1.75)\n"
         f"/combo — Combo bets only\n\n"
         f"📝 BET TRACKER\n"
-        f"/logbet [match] [pick] [odds] [stake] — Log a bet\n"
-        f"Example: /logbet Arsenal vs Chelsea Over2.5 1.65 2000\n"
-        f"/result [bet number] [win/loss] — Update result\n"
+        f"/logbet [match] [pick] [odds] [stake]\n"
+        f"Example: /logbet ArsenalvsChelsea Over2.5 1.65 2000\n"
+        f"/result [number] [win/loss] — Update result\n"
         f"/mybets — See all your bets\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 Powered by Gemini + Groq\n"
+        f"🤖 Gemini + Groq powered\n"
         f"🇳🇬 Built for SportyBet"
     )
 
 async def set_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Please provide your name. Example: /setname John")
+        await update.message.reply_text("❌ Example: /setname John")
         return
     name = " ".join(context.args)
     data = load_data()
@@ -345,7 +401,6 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bankroll = data.get("bankroll", 0)
     initial = data.get("initial_bankroll", 0)
     bets = data.get("bets", [])
-
     total_bets = len(bets)
     won = len([b for b in bets if b.get("result") == "win"])
     lost = len([b for b in bets if b.get("result") == "loss"])
@@ -355,7 +410,6 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profit = total_returned - total_staked
     roi = (profit / total_staked * 100) if total_staked > 0 else 0
     growth = ((bankroll - initial) / initial * 100) if initial > 0 else 0
-
     await update.message.reply_text(
         f"📊 {name}'s ACE1000 STATS\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -382,15 +436,12 @@ async def bankroll_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
     history = data.get("bankroll_history", [])
-
     if not history:
-        await update.message.reply_text(f"No bankroll history yet, {name}. Set your bankroll with /bankroll [amount]")
+        await update.message.reply_text(f"No bankroll history yet, {name}.")
         return
-
     lines = [f"📅 {name}'s BANKROLL HISTORY\n━━━━━━━━━━━━━━━━━━━━"]
-    for i, entry in enumerate(history[-10:]):
+    for entry in history[-10:]:
         lines.append(f"{entry['date']}: {format_naira(entry['amount'])}")
-
     await update.message.reply_text("\n".join(lines))
 
 async def log_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,7 +457,6 @@ async def log_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         odds = float(context.args[2])
         stake = float(context.args[3])
         potential = odds * stake
-
         data = load_data()
         bet = {
             "id": len(data["bets"]) + 1,
@@ -421,7 +471,6 @@ async def log_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["bets"].append(bet)
         save_data(data)
         name = data.get("name", "Champ")
-
         await update.message.reply_text(
             f"✅ Bet #{bet['id']} logged, {name}!\n\n"
             f"Match: {match}\n"
@@ -432,31 +481,26 @@ async def log_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Use /result {bet['id']} win or /result {bet['id']} loss to update!"
         )
     except ValueError:
-        await update.message.reply_text("❌ Invalid odds or stake. Make sure they are numbers.")
+        await update.message.reply_text("❌ Invalid odds or stake.")
 
 async def update_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
-        await update.message.reply_text("❌ Format: /result [bet number] [win/loss]\nExample: /result 1 win")
+        await update.message.reply_text("❌ Format: /result [bet number] [win/loss]")
         return
     try:
         bet_id = int(context.args[0])
         result = context.args[1].lower()
-
         if result not in ["win", "loss"]:
-            await update.message.reply_text("❌ Result must be 'win' or 'loss'")
+            await update.message.reply_text("❌ Result must be win or loss")
             return
-
         data = load_data()
         name = data.get("name", "Champ")
         bet = next((b for b in data["bets"] if b["id"] == bet_id), None)
-
         if not bet:
             await update.message.reply_text(f"❌ Bet #{bet_id} not found.")
             return
-
         bet["result"] = result
         bankroll = data.get("bankroll", 0)
-
         if result == "win":
             profit = (bet["odds"] - 1) * bet["stake"]
             data["bankroll"] = bankroll + profit
@@ -495,11 +539,9 @@ async def my_bets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
     bets = data.get("bets", [])
-
     if not bets:
         await update.message.reply_text(f"No bets logged yet, {name}. Use /logbet to record your bets!")
         return
-
     lines = [f"📝 {name}'s BET HISTORY\n━━━━━━━━━━━━━━━━━━━━"]
     for bet in bets[-10:]:
         emoji = "✅" if bet["result"] == "win" else "❌" if bet["result"] == "loss" else "⏳"
@@ -507,7 +549,6 @@ async def my_bets(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{emoji} #{bet['id']} {bet['match']}\n"
             f"   {bet['pick']} @ {bet['odds']} | Stake: {format_naira(bet['stake'])}"
         )
-
     await update.message.reply_text("\n".join(lines))
 
 async def get_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -565,7 +606,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bankroll = data.get("bankroll", 0)
         bankroll_info = f"User name: {name}. Bankroll: {format_naira(bankroll)}" if bankroll > 0 else f"User name: {name}. No bankroll set."
         user_message = update.message.text
-        prompt = f"You are Ace1000, a smart football betting analyst for a Nigerian SportyBet punter. {bankroll_info}. The user says: {user_message}\n\nAddress them as {name}. Respond helpfully about football betting, odds, or analysis. Reference SportyBet specifically. Be conversational and friendly."
+        prompt = f"{STYLE}\nYou are Ace1000, a smart football betting analyst for a Nigerian SportyBet punter. {bankroll_info}. The user says: {user_message}\n\nAddress them as {name}. Respond helpfully about football betting, odds, or analysis. Reference SportyBet. Be conversational and friendly. No markdown symbols."
         result = ask_ai(prompt)
         await update.message.reply_text(result)
     except Exception as e:
@@ -579,13 +620,11 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         file_bytes = bytes(await file.download_as_bytearray())
-        caption = update.message.caption or f"Analyze these SportyBet odds for {name}. Tell me which are good value, which to avoid, and suggest a combo if possible."
+        caption = update.message.caption or f"Analyze these SportyBet odds for {name}. Tell me which are good value, which to avoid, and suggest a combo. No markdown symbols, plain text and emojis only."
         result = ask_ai(caption, image_bytes=file_bytes)
         await update.message.reply_text(result)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
-
-# ─── SCHEDULED JOBS ─────────────────────────────────────────
 
 async def morning_briefing(context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
@@ -603,10 +642,10 @@ async def morning_briefing(context: ContextTypes.DEFAULT_TYPE):
         result = ask_ai(prompt)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"🌅 Good morning {name}! Here are your Ace1000 picks for today:\n\n{result}"
+            text=f"🌅 Good morning {name}! Ace1000 has your picks ready:\n\n{result}"
         )
     except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"🌅 Good morning {name}! Couldn't fetch picks right now. Use /odds when ready.")
+        logging.error(f"Morning briefing error: {e}")
 
 async def weekly_summary(context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
@@ -617,20 +656,20 @@ async def weekly_summary(context: ContextTypes.DEFAULT_TYPE):
     bets = data.get("bets", [])
     bankroll = data.get("bankroll", 0)
     initial = data.get("initial_bankroll", 0)
-
     won = len([b for b in bets if b.get("result") == "win"])
     lost = len([b for b in bets if b.get("result") == "loss"])
     total_staked = sum(b.get("stake", 0) for b in bets if b.get("result") != "pending")
     total_returned = sum(b.get("stake", 0) * b.get("odds", 1) for b in bets if b.get("result") == "win")
     profit = total_returned - total_staked
     growth = ((bankroll - initial) / initial * 100) if initial > 0 else 0
-
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            f"📊 WEEKLY SUMMARY — {name}\n\n"
+            f"📊 WEEKLY SUMMARY\n"
+            f"Hey {name}! Here is how your week went:\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"✅ Won: {won} | ❌ Lost: {lost}\n"
+            f"✅ Won: {won}\n"
+            f"❌ Lost: {lost}\n"
             f"Win Rate: {(won/max(won+lost,1)*100):.1f}%\n"
             f"Profit/Loss: {format_naira(profit)}\n"
             f"Bankroll Growth: {growth:+.1f}%\n"
@@ -650,17 +689,28 @@ async def value_alert(context: ContextTypes.DEFAULT_TYPE):
         if not odds_data:
             return
         bankroll = data.get("bankroll", 0)
-        s5 = format_naira(bankroll * 0.05) if bankroll > 0 else "Set bankroll first"
-        prompt = f"""You are Ace1000. Scan these odds for ONE single outstanding value bet only. 
-Only alert if you find something genuinely good with odds between 1.40-2.50. 
-If nothing stands out, reply with exactly: NO_ALERT
-If you find something good format it as:
-🚨 VALUE ALERT for {name}!
+        s3 = format_naira(bankroll * 0.03) if bankroll > 0 else "Set bankroll first"
+        prompt = f"""{STYLE}
+You are Ace1000. Scan these odds for ONE outstanding value bet only.
+Only alert if genuinely good with odds between 1.40-2.50.
+If nothing stands out reply with exactly: NO_ALERT
+If you find something good use this format:
+
+🚨 VALUE ALERT, {name}!
+
 Match: [match]
 Bet: [pick]
 Odds: [odds]
-Stake: 3% = {s5}
-Why: [one sentence]
+Stake: 3% = {s3}
+
+📊 ACE1000 ANALYSIS:
+H2H: [record]
+Form: [both teams]
+Key Stat: [one stat]
+Verdict: [one sentence]
+
+Risk: [Low/Medium] 
+
 Odds data: {str(odds_data[:2])}"""
         result = ask_ai(prompt)
         if "NO_ALERT" not in result:
@@ -668,24 +718,9 @@ Odds data: {str(odds_data[:2])}"""
     except Exception:
         pass
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    data["chat_id"] = update.effective_chat.id
-    save_data(data)
-    name = data.get("name", "Champ")
-    bankroll = data.get("bankroll", 0)
-    bankroll_status = format_naira(bankroll) if bankroll > 0 else "Not set"
-    await update.message.reply_text(
-        f"👋 Welcome to Ace1000, {name}!\n\n"
-        f"Your personal SportyBet analyst 🇳🇬\n\n"
-        f"💰 Bankroll: {bankroll_status}\n\n"
-        f"Type /home to see all commands!"
-    )
-
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("home", home))
     app.add_handler(CommandHandler("setname", set_name))
@@ -701,13 +736,9 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Scheduled jobs
     job_queue = app.job_queue
-    # Morning briefing at 7AM every day
     job_queue.run_daily(morning_briefing, time=datetime.strptime("07:00", "%H:%M").time())
-    # Weekly summary every Sunday at 8PM
     job_queue.run_daily(weekly_summary, time=datetime.strptime("20:00", "%H:%M").time(), days=(6,))
-    # Value alerts every 3 hours
     job_queue.run_repeating(value_alert, interval=10800, first=60)
 
     print("🚀 Ace1000Bot is running! Gemini primary, Groq backup.")
@@ -715,3 +746,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+**Ctrl + S** then push to GitHub and Railway will auto-redeploy:
+```
+git add .
+git commit -m "Clean formatting and deep analysis"
+git push
