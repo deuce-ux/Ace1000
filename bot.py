@@ -16,6 +16,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -30,7 +31,7 @@ IMPORTANT FORMATTING RULES — FOLLOW STRICTLY:
 - Do NOT use bullet points with * or -
 - Use emojis and plain text only
 - Use clean dividers like ━━━━━━━━━━━━━━━━━━━━
-- Every pick MUST include detailed reasoning with H2H stats, form, and verdict
+- Every pick MUST include detailed reasoning with real H2H stats, form, and verdict
 - Be confident and direct like a professional analyst
 - Address the user by name naturally
 """
@@ -119,7 +120,67 @@ def fetch_odds():
                 continue
     return all_data
 
-def build_odds_prompt(data, bankroll, mode="full"):
+def fetch_real_stats():
+    stats = {}
+    try:
+        headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+
+        # Fetch EPL matches
+        epl_url = "https://api.football-data.org/v4/competitions/PL/matches?status=SCHEDULED"
+        epl_response = requests.get(epl_url, headers=headers, timeout=10)
+        if epl_response.status_code == 200:
+            epl_data = epl_response.json()
+            matches = epl_data.get("matches", [])[:5]
+            stats["epl_matches"] = []
+            for match in matches:
+                stats["epl_matches"].append({
+                    "home": match["homeTeam"]["name"],
+                    "away": match["awayTeam"]["name"],
+                    "date": match.get("utcDate", "")
+                })
+
+        # Fetch Champions League matches
+        cl_url = "https://api.football-data.org/v4/competitions/CL/matches?status=SCHEDULED"
+        cl_response = requests.get(cl_url, headers=headers, timeout=10)
+        if cl_response.status_code == 200:
+            cl_data = cl_response.json()
+            matches = cl_data.get("matches", [])[:3]
+            stats["cl_matches"] = []
+            for match in matches:
+                stats["cl_matches"].append({
+                    "home": match["homeTeam"]["name"],
+                    "away": match["awayTeam"]["name"],
+                    "date": match.get("utcDate", "")
+                })
+
+        # Fetch EPL standings for form context
+        standings_url = "https://api.football-data.org/v4/competitions/PL/standings"
+        standings_response = requests.get(standings_url, headers=headers, timeout=10)
+        if standings_response.status_code == 200:
+            standings_data = standings_response.json()
+            table = standings_data.get("standings", [{}])[0].get("table", [])[:10]
+            stats["epl_standings"] = []
+            for team in table:
+                stats["epl_standings"].append({
+                    "position": team["position"],
+                    "team": team["team"]["name"],
+                    "played": team["playedGames"],
+                    "won": team["won"],
+                    "drawn": team["draw"],
+                    "lost": team["lost"],
+                    "goals_for": team["goalsFor"],
+                    "goals_against": team["goalsAgainst"],
+                    "points": team["points"]
+                })
+
+        logging.info("Real stats fetched successfully")
+
+    except Exception as e:
+        logging.error(f"Stats fetch error: {e}")
+
+    return stats
+
+def build_odds_prompt(odds_data, real_stats, bankroll, mode="full"):
     name = get_name()
     br = bankroll
     s2 = format_naira(br * 0.02) if br > 0 else "Set bankroll first"
@@ -127,64 +188,104 @@ def build_odds_prompt(data, bankroll, mode="full"):
     s5 = format_naira(br * 0.05) if br > 0 else "Set bankroll first"
     bankroll_info = f"Punter name: {name}. Bankroll: {format_naira(br)}. 2%={s2}, 3%={s3}, 5%={s5}"
 
+    stats_summary = f"REAL MATCH DATA:\n{json.dumps(real_stats, indent=2)}" if real_stats else "No live stats available, use your training knowledge."
+
     if mode == "safe":
         return f"""{STYLE}
 You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
 {bankroll_info}
 
-Give 3 SAFE picks with odds 1.20-1.75 only. Focus on Over 1.5, BTTS, Double Chance, strong favorites.
-For EACH pick provide deep reasoning including H2H record, recent form, and clear verdict.
+{stats_summary}
 
-Use EXACTLY this format for each pick:
+Using the REAL match data above, give 3 SAFE picks with odds 1.20-1.75.
+Focus on Over 1.5, BTTS, Double Chance, strong favorites based on real standings and form.
+Use actual team names from the real data provided.
+
+Format EXACTLY:
+
+🛡️ ACE1000 SAFE PICKS
+Hey {name}! High confidence. Low risk. SportyBet ready 🇳🇬
 
 ━━━━━━━━━━━━━━━━━━━━
-✅ PICK [number]
-Match: [Team A vs Team B]
+✅ PICK 1
+Match: [Real Team A vs Real Team B]
 Bet: [e.g. Over 1.5 Goals]
 Odds: [1.20-1.75]
 Confidence: [85-95%]
 Stake: 5% = {s5}
 
 📊 ACE1000 ANALYSIS:
-H2H: [Head to head record e.g. Team A won 8 of last 10]
-Form: [Recent form of both teams e.g. Team A WWWDL, Team B LLDWL]
-Key Stat: [One powerful statistic]
-Verdict: [Clear confident one sentence conclusion]
+H2H: [Real or knowledge-based H2H record]
+Form: [Real standings context e.g. Team A 3rd in table, 8W 2D 2L]
+Key Stat: [Powerful real statistic]
+Verdict: [Confident one sentence conclusion]
 
-Risk Level: Low 🟢
+Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 
-After all 3 picks add:
+✅ PICK 2
+Match: [Real Team A vs Real Team B]
+Bet: [e.g. BTTS Yes]
+Odds: [1.20-1.75]
+Confidence: [85-95%]
+Stake: 5% = {s5}
+
+📊 ACE1000 ANALYSIS:
+H2H: [Record]
+Form: [Real standings context]
+Key Stat: [Stat]
+Verdict: [Conclusion]
+
+Risk: Low 🟢
+━━━━━━━━━━━━━━━━━━━━
+
+✅ PICK 3
+Match: [Real Team A vs Real Team B]
+Bet: [e.g. Double Chance]
+Odds: [1.20-1.75]
+Confidence: [85-95%]
+Stake: 5% = {s5}
+
+📊 ACE1000 ANALYSIS:
+H2H: [Record]
+Form: [Real standings context]
+Key Stat: [Stat]
+Verdict: [Conclusion]
+
+Risk: Low 🟢
+━━━━━━━━━━━━━━━━━━━━
 
 🔗 SAFE COMBO
-Combine all 3 picks above on SportyBet:
+Combine all 3 on SportyBet:
 Combined Odds: [multiply all 3]
 Stake: 5% = {s5}
 Potential Return: [combined odds x stake amount]
 
 ⚠️ Bet responsibly. Never stake what you cannot afford to lose.
 
-Odds data: {str(data[:3])}"""
+Odds data: {str(odds_data[:3])}"""
 
     elif mode == "combo":
         return f"""{STYLE}
 You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
 {bankroll_info}
 
-Build 3 combo bets of different risk levels with clear reasoning for each leg.
+{stats_summary}
 
-Use EXACTLY this format:
+Build 3 combo bets using REAL match data. Use actual team names from the data.
+
+Format EXACTLY:
 
 🔗 ACE1000 COMBO BETS
-Hey {name}! Here are your combos for SportyBet 🇳🇬
+{name}, here are your combos for SportyBet 🇳🇬
 
 ━━━━━━━━━━━━━━━━━━━━
 COMBO 1 - BANKER 🏦
 Risk: Very Low 🟢
 
-Leg 1: [Match - Bet @ Odds] — [One sentence why]
-Leg 2: [Match - Bet @ Odds] — [One sentence why]
-Leg 3: [Match - Bet @ Odds] — [One sentence why]
+Leg 1: [Real Match - Bet @ Odds] — [One sentence why based on real data]
+Leg 2: [Real Match - Bet @ Odds] — [One sentence why]
+Leg 3: [Real Match - Bet @ Odds] — [One sentence why]
 
 Combined Odds: [X.XX]
 Stake: 5% = {s5}
@@ -195,9 +296,9 @@ Win Probability: Very High
 COMBO 2 - BALANCED ⚖️
 Risk: Medium 🟡
 
-Leg 1: [Match - Bet @ Odds] — [One sentence why]
-Leg 2: [Match - Bet @ Odds] — [One sentence why]
-Leg 3: [Match - Bet @ Odds] — [One sentence why]
+Leg 1: [Real Match - Bet @ Odds] — [Why]
+Leg 2: [Real Match - Bet @ Odds] — [Why]
+Leg 3: [Real Match - Bet @ Odds] — [Why]
 
 Combined Odds: [X.XX]
 Stake: 3% = {s3}
@@ -208,10 +309,10 @@ Win Probability: High
 COMBO 3 - JACKPOT 💥
 Risk: Higher 🔴
 
-Leg 1: [Match - Bet @ Odds] — [One sentence why]
-Leg 2: [Match - Bet @ Odds] — [One sentence why]
-Leg 3: [Match - Bet @ Odds] — [One sentence why]
-Leg 4: [Match - Bet @ Odds] — [One sentence why]
+Leg 1: [Real Match - Bet @ Odds] — [Why]
+Leg 2: [Real Match - Bet @ Odds] — [Why]
+Leg 3: [Real Match - Bet @ Odds] — [Why]
+Leg 4: [Real Match - Bet @ Odds] — [Why]
 
 Combined Odds: [X.XX]
 Stake: 2% = {s2}
@@ -221,17 +322,19 @@ Win Probability: Medium
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ Always bet responsibly on SportyBet, {name}!
 
-Odds data: {str(data[:3])}"""
+Odds data: {str(odds_data[:3])}"""
 
     else:
         return f"""{STYLE}
 You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
 {bankroll_info}
 
-Give a FULL daily betting card with deep reasoning for every single pick.
-Every pick must include H2H, form, key stat and verdict.
+{stats_summary}
 
-Use EXACTLY this format:
+Using the REAL match data and standings above, give a FULL daily betting card.
+Use actual team names from the real data. Base analysis on real standings and form.
+
+Format EXACTLY:
 
 🎯 ACE1000 DAILY BETTING CARD
 Hey {name}! Here are today's best picks 🇳🇬
@@ -240,31 +343,31 @@ Hey {name}! Here are today's best picks 🇳🇬
 🛡️ SAFE PICKS (Odds 1.20 - 1.75)
 
 ✅ SAFE PICK 1
-Match: [Team A vs Team B]
+Match: [Real Team A vs Real Team B]
 Bet: [e.g. Over 1.5 Goals]
 Odds: [1.20-1.75]
 Stake: 5% = {s5}
 
 📊 ACE1000 ANALYSIS:
 H2H: [Record]
-Form: [Both teams recent form]
-Key Stat: [Powerful stat]
+Form: [Real standings e.g. 3rd place, 8W 2D 2L, 24 goals scored]
+Key Stat: [Real stat]
 Verdict: [Confident conclusion]
 
 Risk: Low 🟢
 
 ━━━━━━━━━━━━━━━━━━━━
 ✅ SAFE PICK 2
-Match: [Team A vs Team B]
+Match: [Real Team A vs Real Team B]
 Bet: [e.g. BTTS Yes]
 Odds: [1.20-1.75]
 Stake: 5% = {s5}
 
 📊 ACE1000 ANALYSIS:
 H2H: [Record]
-Form: [Both teams recent form]
-Key Stat: [Powerful stat]
-Verdict: [Confident conclusion]
+Form: [Real standings context]
+Key Stat: [Real stat]
+Verdict: [Conclusion]
 
 Risk: Low 🟢
 
@@ -272,16 +375,16 @@ Risk: Low 🟢
 🎯 VALUE PICKS (Odds 1.80 - 2.50)
 
 ⭐ VALUE PICK 1
-Match: [Team A vs Team B]
+Match: [Real Team A vs Real Team B]
 Bet: [Your pick]
 Odds: [1.80-2.50]
 Stake: 3% = {s3}
 
 📊 ACE1000 ANALYSIS:
 H2H: [Record]
-Form: [Both teams recent form]
-Key Stat: [Powerful stat]
-Verdict: [Confident conclusion]
+Form: [Real standings context]
+Key Stat: [Real stat]
+Verdict: [Conclusion]
 
 Risk: Medium 🟡
 
@@ -289,16 +392,16 @@ Risk: Medium 🟡
 🔗 COMBO BETS
 
 COMBO 1 - BANKER 🏦
-Leg 1: [Match - Bet @ Odds] — [Why]
-Leg 2: [Match - Bet @ Odds] — [Why]
-Leg 3: [Match - Bet @ Odds] — [Why]
+Leg 1: [Real Match - Bet @ Odds] — [Why]
+Leg 2: [Real Match - Bet @ Odds] — [Why]
+Leg 3: [Real Match - Bet @ Odds] — [Why]
 Combined Odds: [X.XX]
 Stake: 5% = {s5}
 Potential Return: [combined odds x stake]
 
 COMBO 2 - VALUE ⭐
-Leg 1: [Match - Bet @ Odds] — [Why]
-Leg 2: [Match - Bet @ Odds] — [Why]
+Leg 1: [Real Match - Bet @ Odds] — [Why]
+Leg 2: [Real Match - Bet @ Odds] — [Why]
 Combined Odds: [X.XX]
 Stake: 3% = {s3}
 Potential Return: [combined odds x stake]
@@ -306,7 +409,7 @@ Potential Return: [combined odds x stake]
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ Bet responsibly {name}. Never stake more than you can afford to lose.
 
-Odds data: {str(data[:3])}"""
+Odds data: {str(odds_data[:3])}"""
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
@@ -554,14 +657,12 @@ async def my_bets(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
-    await update.message.reply_text(f"🔍 Analyzing today's matches for you, {name}...")
+    await update.message.reply_text(f"🔍 Fetching real stats and analyzing matches for you, {name}...")
     try:
         odds_data = fetch_odds()
-        if not odds_data:
-            await update.message.reply_text("No odds available right now. Try again later.")
-            return
+        real_stats = fetch_real_stats()
         bankroll = data.get("bankroll", 0)
-        prompt = build_odds_prompt(odds_data, bankroll, mode="full")
+        prompt = build_odds_prompt(odds_data, real_stats, bankroll, mode="full")
         result = ask_ai(prompt)
         await update.message.reply_text(result)
     except Exception as e:
@@ -570,14 +671,12 @@ async def get_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def safe_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
-    await update.message.reply_text(f"🛡️ Fetching safe picks for you, {name}...")
+    await update.message.reply_text(f"🛡️ Fetching real stats for safe picks, {name}...")
     try:
         odds_data = fetch_odds()
-        if not odds_data:
-            await update.message.reply_text("No odds available right now.")
-            return
+        real_stats = fetch_real_stats()
         bankroll = data.get("bankroll", 0)
-        prompt = build_odds_prompt(odds_data, bankroll, mode="safe")
+        prompt = build_odds_prompt(odds_data, real_stats, bankroll, mode="safe")
         result = ask_ai(prompt)
         await update.message.reply_text(result)
     except Exception as e:
@@ -586,14 +685,12 @@ async def safe_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def combo_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
-    await update.message.reply_text(f"🔗 Building combo bets for you, {name}...")
+    await update.message.reply_text(f"🔗 Building data-driven combos for you, {name}...")
     try:
         odds_data = fetch_odds()
-        if not odds_data:
-            await update.message.reply_text("No odds available right now.")
-            return
+        real_stats = fetch_real_stats()
         bankroll = data.get("bankroll", 0)
-        prompt = build_odds_prompt(odds_data, bankroll, mode="combo")
+        prompt = build_odds_prompt(odds_data, real_stats, bankroll, mode="combo")
         result = ask_ai(prompt)
         await update.message.reply_text(result)
     except Exception as e:
@@ -634,11 +731,9 @@ async def morning_briefing(context: ContextTypes.DEFAULT_TYPE):
     name = data.get("name", "Champ")
     try:
         odds_data = fetch_odds()
-        if not odds_data:
-            await context.bot.send_message(chat_id=chat_id, text=f"🌅 Good morning {name}! No odds available yet, check back later.")
-            return
+        real_stats = fetch_real_stats()
         bankroll = data.get("bankroll", 0)
-        prompt = build_odds_prompt(odds_data, bankroll, mode="full")
+        prompt = build_odds_prompt(odds_data, real_stats, bankroll, mode="full")
         result = ask_ai(prompt)
         await context.bot.send_message(
             chat_id=chat_id,
@@ -686,31 +781,32 @@ async def value_alert(context: ContextTypes.DEFAULT_TYPE):
     name = data.get("name", "Champ")
     try:
         odds_data = fetch_odds()
-        if not odds_data:
-            return
+        real_stats = fetch_real_stats()
         bankroll = data.get("bankroll", 0)
         s3 = format_naira(bankroll * 0.03) if bankroll > 0 else "Set bankroll first"
         prompt = f"""{STYLE}
-You are Ace1000. Scan these odds for ONE outstanding value bet only.
+You are Ace1000. Using the real stats below, scan for ONE outstanding value bet.
 Only alert if genuinely good with odds between 1.40-2.50.
 If nothing stands out reply with exactly: NO_ALERT
+
 If you find something good use this format:
 
 🚨 VALUE ALERT, {name}!
 
-Match: [match]
+Match: [Real match]
 Bet: [pick]
 Odds: [odds]
 Stake: 3% = {s3}
 
 📊 ACE1000 ANALYSIS:
 H2H: [record]
-Form: [both teams]
-Key Stat: [one stat]
+Form: [real form from standings]
+Key Stat: [real stat]
 Verdict: [one sentence]
 
-Risk: [Low/Medium] 
+Risk: [Low/Medium]
 
+Real stats: {json.dumps(real_stats)}
 Odds data: {str(odds_data[:2])}"""
         result = ask_ai(prompt)
         if "NO_ALERT" not in result:
@@ -739,9 +835,10 @@ def main():
     job_queue = app.job_queue
     job_queue.run_daily(morning_briefing, time=datetime.strptime("07:00", "%H:%M").time())
     job_queue.run_daily(weekly_summary, time=datetime.strptime("20:00", "%H:%M").time(), days=(6,))
-    job_queue.run_repeating(value_alert, interval=10800, first=60)
+    # Value alerts every 6 hours instead of 3
+    job_queue.run_repeating(value_alert, interval=21600, first=60)
 
-    print("🚀 Ace1000Bot is running! Gemini primary, Groq backup.")
+    print("🚀 Ace1000Bot is running! Real stats powered by football-data.org")
     app.run_polling()
 
 if __name__ == "__main__":
