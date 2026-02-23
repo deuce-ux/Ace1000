@@ -1,0 +1,5 @@
+.env
+bankroll.json
+ace1000_data.json
+__pycache__/
+*.pyc
