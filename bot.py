@@ -746,10 +746,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-**Ctrl + S** then push to GitHub and Railway will auto-redeploy:
-```
-git add .
-git commit -m "Clean formatting and deep analysis"
-git push
