@@ -2,7 +2,7 @@ import logging
 import os
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
 from dotenv import load_dotenv
@@ -17,27 +17,26 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY")
-
 SPORTSDB_KEY = "123"
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 logging.basicConfig(level=logging.INFO)
-
 DATA_FILE = "ace1000_data.json"
 
 STYLE = """
-IMPORTANT FORMATTING RULES — FOLLOW STRICTLY:
-- Do NOT use markdown symbols like **, ###, *, or __ anywhere
-- Do NOT use bullet points with * or -
-- Use emojis and plain text only
-- Use clean dividers like ━━━━━━━━━━━━━━━━━━━━
-- Every pick MUST include detailed reasoning with real H2H stats, form, and verdict
-- Be confident and direct like a professional analyst
-- Address the user by name naturally
-- COMBO LEGS must have maximum odds of 2.00 each — no higher
-- Only recommend bets with genuine statistical edge
+CRITICAL FORMATTING RULES — FOLLOW ALL STRICTLY OR RESPONSE IS INVALID:
+1. ZERO markdown symbols — no **, ###, *, __, or ~ anywhere
+2. ZERO bullet points with * or -
+3. Emojis and plain text ONLY
+4. Use ━━━━━━━━━━━━━━━━━━━━ as dividers
+5. SAFE PICKS must have odds strictly between 1.20 and 1.75 — NEVER above 1.75
+6. VALUE PICKS must have odds strictly between 1.80 and 2.50 — NEVER outside this range
+7. COMBO legs must NEVER exceed 2.00 odds each — if a team's win odds exceed 2.00 use BTTS or Over 1.5 instead
+8. Always show exact Naira stake amounts
+9. Address user by name naturally
+10. Base ALL analysis on the real data provided — no made up statistics
 """
 
 def load_data():
@@ -85,39 +84,50 @@ def get_staking_strategy(data):
     bankroll_ratio = (bankroll / initial) if initial > 0 else 1.0
 
     if bankroll_ratio < 0.5:
-        strategy = "DEFENSIVE"
-        description = "Your bankroll is below 50% of starting amount. Flat staking at 1-2% per bet. Protect what you have first."
-        safe_stake = 0.01
-        value_stake = 0.02
+        return {
+            "strategy": "DEFENSIVE",
+            "description": "Bankroll below 50% of start. Flat stake at 1-2% only. Protect capital first.",
+            "safe_stake": 0.01,
+            "value_stake": 0.02,
+            "win_rate": win_rate,
+            "bankroll_ratio": bankroll_ratio
+        }
     elif bankroll_ratio < 0.75:
-        strategy = "CONSERVATIVE FLAT"
-        description = "Bankroll is recovering. Flat staking at 2-3% per bet. Stay disciplined and let it rebuild."
-        safe_stake = 0.02
-        value_stake = 0.03
+        return {
+            "strategy": "CONSERVATIVE FLAT",
+            "description": "Bankroll recovering. Flat stake at 2-3%. Stay disciplined.",
+            "safe_stake": 0.02,
+            "value_stake": 0.03,
+            "win_rate": win_rate,
+            "bankroll_ratio": bankroll_ratio
+        }
     elif win_rate >= 0.6 and bankroll_ratio >= 1.0:
-        strategy = "KELLY CRITERION"
-        description = "You are winning consistently and bankroll is growing. Quarter Kelly — safe picks 5%, value picks 3%."
-        safe_stake = 0.05
-        value_stake = 0.03
+        return {
+            "strategy": "KELLY CRITERION",
+            "description": "Winning consistently and bankroll growing. Quarter Kelly active. Safe 5%, value 3%.",
+            "safe_stake": 0.05,
+            "value_stake": 0.03,
+            "win_rate": win_rate,
+            "bankroll_ratio": bankroll_ratio
+        }
     elif win_rate >= 0.5 and bankroll_ratio >= 0.9:
-        strategy = "FLAT STAKING"
-        description = "Solid performance. Standard flat staking. Safe picks 5%, value picks 3%, combos 2%."
-        safe_stake = 0.05
-        value_stake = 0.03
+        return {
+            "strategy": "FLAT STAKING",
+            "description": "Solid results. Standard flat staking. Safe 5%, value 3%, combos 2%.",
+            "safe_stake": 0.05,
+            "value_stake": 0.03,
+            "win_rate": win_rate,
+            "bankroll_ratio": bankroll_ratio
+        }
     else:
-        strategy = "CONSERVATIVE FLAT"
-        description = "Mixed results. Stay conservative. Safe picks 3%, value picks 2%."
-        safe_stake = 0.03
-        value_stake = 0.02
-
-    return {
-        "strategy": strategy,
-        "description": description,
-        "safe_stake": safe_stake,
-        "value_stake": value_stake,
-        "win_rate": win_rate,
-        "bankroll_ratio": bankroll_ratio
-    }
+        return {
+            "strategy": "CONSERVATIVE FLAT",
+            "description": "Mixed results. Stay conservative. Safe 3%, value 2%.",
+            "safe_stake": 0.03,
+            "value_stake": 0.02,
+            "win_rate": win_rate,
+            "bankroll_ratio": bankroll_ratio
+        }
 
 def ask_ai(prompt, image_bytes=None):
     try:
@@ -137,7 +147,7 @@ def ask_ai(prompt, image_bytes=None):
         logging.info("Using Gemini")
         return response.text
     except Exception as gemini_error:
-        logging.info(f"Gemini failed ({gemini_error}), switching to Groq...")
+        logging.info(f"Gemini failed, switching to Groq: {gemini_error}")
         try:
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
@@ -174,237 +184,264 @@ def fetch_real_stats():
     try:
         headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
 
-        epl_url = "https://api.football-data.org/v4/competitions/PL/matches?status=SCHEDULED"
-        epl_response = requests.get(epl_url, headers=headers, timeout=10)
-        if epl_response.status_code == 200:
-            epl_data = epl_response.json()
-            matches = epl_data.get("matches", [])[:5]
-            stats["epl_matches"] = []
-            for match in matches:
-                stats["epl_matches"].append({
-                    "home": match["homeTeam"]["name"],
-                    "away": match["awayTeam"]["name"],
-                    "date": match.get("utcDate", "")
-                })
+        for comp_code, comp_key in [("PL", "epl"), ("CL", "cl")]:
+            try:
+                url = f"https://api.football-data.org/v4/competitions/{comp_code}/matches?status=SCHEDULED"
+                response = requests.get(url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    matches = data.get("matches", [])[:5]
+                    stats[f"{comp_key}_matches"] = [
+                        {
+                            "home": m["homeTeam"]["name"],
+                            "away": m["awayTeam"]["name"],
+                            "date": m.get("utcDate", "")
+                        } for m in matches
+                    ]
+            except:
+                continue
 
-        cl_url = "https://api.football-data.org/v4/competitions/CL/matches?status=SCHEDULED"
-        cl_response = requests.get(cl_url, headers=headers, timeout=10)
-        if cl_response.status_code == 200:
-            cl_data = cl_response.json()
-            matches = cl_data.get("matches", [])[:3]
-            stats["cl_matches"] = []
-            for match in matches:
-                stats["cl_matches"].append({
-                    "home": match["homeTeam"]["name"],
-                    "away": match["awayTeam"]["name"],
-                    "date": match.get("utcDate", "")
-                })
+        try:
+            url = "https://api.football-data.org/v4/competitions/PL/standings"
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                table = data.get("standings", [{}])[0].get("table", [])[:12]
+                stats["epl_standings"] = [
+                    {
+                        "position": t["position"],
+                        "team": t["team"]["name"],
+                        "played": t["playedGames"],
+                        "won": t["won"],
+                        "drawn": t["draw"],
+                        "lost": t["lost"],
+                        "goals_for": t["goalsFor"],
+                        "goals_against": t["goalsAgainst"],
+                        "points": t["points"]
+                    } for t in table
+                ]
+        except:
+            pass
 
-        standings_url = "https://api.football-data.org/v4/competitions/PL/standings"
-        standings_response = requests.get(standings_url, headers=headers, timeout=10)
-        if standings_response.status_code == 200:
-            standings_data = standings_response.json()
-            table = standings_data.get("standings", [{}])[0].get("table", [])[:10]
-            stats["epl_standings"] = []
-            for team in table:
-                stats["epl_standings"].append({
-                    "position": team["position"],
-                    "team": team["team"]["name"],
-                    "played": team["playedGames"],
-                    "won": team["won"],
-                    "drawn": team["draw"],
-                    "lost": team["lost"],
-                    "goals_for": team["goalsFor"],
-                    "goals_against": team["goalsAgainst"],
-                    "points": team["points"]
-                })
-
-        logging.info("Real stats fetched successfully")
+        logging.info("Real stats fetched")
     except Exception as e:
-        logging.error(f"Stats fetch error: {e}")
-
+        logging.error(f"Stats error: {e}")
     return stats
 
 def fetch_team_news():
     news = {}
     try:
-        leagues = [
-            {"id": "4328", "name": "EPL"},
-            {"id": "4335", "name": "Champions League"},
-        ]
+        leagues = [("4328", "EPL"), ("4335", "Champions_League")]
+        for league_id, league_name in leagues:
+            try:
+                url = f"https://www.thesportsdb.com/api/v1/json/{SPORTSDB_KEY}/eventsnextleague.php?id={league_id}"
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    events = data.get("events", []) or []
+                    news[league_name] = [
+                        {
+                            "match": f"{e.get('strHomeTeam')} vs {e.get('strAwayTeam')}",
+                            "date": e.get("dateEvent"),
+                            "time": e.get("strTime"),
+                            "venue": e.get("strVenue", "")
+                        } for e in events[:5]
+                    ]
+            except:
+                continue
 
-        for league in leagues:
-            url = f"https://www.thesportsdb.com/api/v1/json/{SPORTSDB_KEY}/eventsnextleague.php?id={league['id']}"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                events = data.get("events", []) or []
-                news[league["name"]] = []
-                for event in events[:5]:
-                    news[league["name"]].append({
-                        "match": f"{event.get('strHomeTeam')} vs {event.get('strAwayTeam')}",
-                        "date": event.get("dateEvent"),
-                        "time": event.get("strTime"),
-                        "venue": event.get("strVenue"),
-                        "home_form": event.get("strHomeTeamBadge", ""),
-                        "status": event.get("strStatus", "")
-                    })
+            try:
+                url = f"https://www.thesportsdb.com/api/v1/json/{SPORTSDB_KEY}/eventspastleague.php?id={league_id}"
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    events = data.get("events", []) or []
+                    news[f"{league_name}_results"] = [
+                        {
+                            "match": f"{e.get('strHomeTeam')} vs {e.get('strAwayTeam')}",
+                            "score": f"{e.get('intHomeScore')}-{e.get('intAwayScore')}",
+                            "date": e.get("dateEvent")
+                        } for e in events[-8:]
+                    ]
+            except:
+                continue
 
-        # Fetch last results for form
-        for league in leagues:
-            url = f"https://www.thesportsdb.com/api/v1/json/{SPORTSDB_KEY}/eventspastleague.php?id={league['id']}"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                events = data.get("events", []) or []
-                key = f"{league['name']}_results"
-                news[key] = []
-                for event in events[-8:]:
-                    news[key].append({
-                        "match": f"{event.get('strHomeTeam')} vs {event.get('strAwayTeam')}",
-                        "score": f"{event.get('intHomeScore')}-{event.get('intAwayScore')}",
-                        "date": event.get("dateEvent")
-                    })
-
-        logging.info("Team news fetched from TheSportsDB")
+        logging.info("Team news fetched")
     except Exception as e:
-        logging.error(f"TheSportsDB fetch error: {e}")
-
+        logging.error(f"TheSportsDB error: {e}")
     return news
 
-def build_odds_prompt(odds_data, real_stats, team_news, bankroll, staking, mode="full"):
+def fetch_soon_matches(hours=2):
+    soon = []
+    try:
+        headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+        now = datetime.now(timezone.utc)
+        cutoff = now + timedelta(hours=hours)
+
+        for comp in ["PL", "CL"]:
+            try:
+                url = f"https://api.football-data.org/v4/competitions/{comp}/matches?status=SCHEDULED"
+                response = requests.get(url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    for match in data.get("matches", []):
+                        match_time = datetime.fromisoformat(
+                            match["utcDate"].replace("Z", "+00:00")
+                        )
+                        if now <= match_time <= cutoff:
+                            soon.append({
+                                "home": match["homeTeam"]["name"],
+                                "away": match["awayTeam"]["name"],
+                                "kickoff": match["utcDate"],
+                                "competition": comp
+                            })
+            except:
+                continue
+
+        logging.info(f"Found {len(soon)} matches in next {hours} hours")
+    except Exception as e:
+        logging.error(f"Soon matches error: {e}")
+    return soon
+
+def build_odds_prompt(odds_data, real_stats, team_news, bankroll, staking, mode="full", soon_matches=None):
     name = get_name()
     br = bankroll
     strategy = staking["strategy"]
     safe_pct = staking["safe_stake"]
     value_pct = staking["value_stake"]
-    s_safe = format_naira(br * safe_pct) if br > 0 else "Set bankroll first"
-    s_value = format_naira(br * value_pct) if br > 0 else "Set bankroll first"
-    s_combo = format_naira(br * 0.02) if br > 0 else "Set bankroll first"
+    s_safe = format_naira(br * safe_pct) if br > 0 else "⚠️ Set bankroll first!"
+    s_value = format_naira(br * value_pct) if br > 0 else "⚠️ Set bankroll first!"
+    s_combo = format_naira(br * 0.02) if br > 0 else "⚠️ Set bankroll first!"
 
     bankroll_info = (
         f"Punter: {name}\n"
-        f"Bankroll: {format_naira(br)}\n"
+        f"Bankroll: {format_naira(br) if br > 0 else 'NOT SET'}\n"
         f"Active Strategy: {strategy}\n"
         f"Safe stake: {safe_pct*100:.0f}% = {s_safe}\n"
         f"Value stake: {value_pct*100:.0f}% = {s_value}\n"
         f"Combo stake: 2% = {s_combo}"
     )
 
-    stats_summary = f"REAL MATCH DATA:\n{json.dumps(real_stats, indent=2)}" if real_stats else ""
+    stats_summary = f"REAL STANDINGS AND FIXTURES:\n{json.dumps(real_stats, indent=2)}" if real_stats else ""
     news_summary = f"UPCOMING MATCHES AND RECENT RESULTS:\n{json.dumps(team_news, indent=2)}" if team_news else ""
+    soon_summary = f"MATCHES KICKING OFF SOON:\n{json.dumps(soon_matches, indent=2)}" if soon_matches else ""
 
-    if mode == "safe":
-        return f"""{STYLE}
+    base_rules = f"""{STYLE}
 You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
 {bankroll_info}
 
 {stats_summary}
-
 {news_summary}
+{soon_summary}
 
-Using ALL the real data above including recent results and upcoming fixtures, give 3 SAFE picks.
-Odds must be 1.20-1.75 only. Focus on Over 1.5, BTTS, Double Chance, strong favorites.
-Base reasoning on actual recent form from results data.
+STRICT ODDS RULES — VIOLATION = INVALID RESPONSE:
+- SAFE picks: odds MUST be 1.20 to 1.75 ONLY. Not 1.76, not 1.80. Maximum 1.75.
+- VALUE picks: odds MUST be 1.80 to 2.50 ONLY.
+- COMBO legs: odds MUST be 2.00 or below ONLY. If team win odds exceed 2.00 use Over 1.5 or BTTS instead.
+- If you cannot find a bet within the range DO NOT invent one. Skip that pick.
+- Use ONLY real teams from the data provided above.
+- Base ALL statistics on real data. Do not invent statistics.
+"""
+
+    if mode == "safe":
+        return f"""{base_rules}
+
+Give 3 SAFE picks only. Odds strictly 1.20-1.75.
+Best options: Over 1.5 Goals, BTTS Yes, Double Chance, heavy favorites.
 
 Format EXACTLY:
 
 🛡️ ACE1000 SAFE PICKS
 Hey {name}! High confidence. Low risk. SportyBet ready 🇳🇬
 
-📊 Active Strategy: {strategy}
+📊 Strategy: {strategy}
 
 ━━━━━━━━━━━━━━━━━━━━
 ✅ PICK 1
-Match: [Real upcoming match]
-Bet: [Pick]
-Odds: [1.20-1.75]
+Match: [Real match from data]
+Bet: [Pick — must give odds 1.20-1.75]
+Odds: [1.20-1.75 ONLY]
 Confidence: [85-95%]
 Stake: {safe_pct*100:.0f}% = {s_safe}
 
-📊 ACE1000 ANALYSIS:
-H2H: [Record from data]
-Recent Form: [Based on actual recent results]
+📊 ANALYSIS:
+H2H: [Real or knowledge-based record]
+Recent Form: [Based on real results data]
 Key Stat: [Real stat from data]
-Verdict: [Confident conclusion]
+Verdict: [One confident sentence]
 
 Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 ✅ PICK 2
-Match: [Real upcoming match]
-Bet: [Pick]
-Odds: [1.20-1.75]
+Match: [Real match]
+Bet: [Pick — odds 1.20-1.75]
+Odds: [1.20-1.75 ONLY]
 Confidence: [85-95%]
 Stake: {safe_pct*100:.0f}% = {s_safe}
 
-📊 ACE1000 ANALYSIS:
+📊 ANALYSIS:
 H2H: [Record]
-Recent Form: [Actual recent results]
+Recent Form: [Real results]
 Key Stat: [Stat]
 Verdict: [Conclusion]
 
 Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 ✅ PICK 3
-Match: [Real upcoming match]
-Bet: [Pick]
-Odds: [1.20-1.75]
+Match: [Real match]
+Bet: [Pick — odds 1.20-1.75]
+Odds: [1.20-1.75 ONLY]
 Confidence: [85-95%]
 Stake: {safe_pct*100:.0f}% = {s_safe}
 
-📊 ACE1000 ANALYSIS:
+📊 ANALYSIS:
 H2H: [Record]
-Recent Form: [Actual recent results]
+Recent Form: [Real results]
 Key Stat: [Stat]
 Verdict: [Conclusion]
 
 Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 🔗 SAFE COMBO
-Combine all 3 on SportyBet:
-Combined Odds: [multiply all 3]
+All 3 picks combined on SportyBet:
+Combined Odds: [Multiply all 3 — must be realistic]
 Stake: 2% = {s_combo}
-Potential Return: [combined odds x {s_combo}]
+Potential Return: [Combined odds x {s_combo}]
 
 ⚠️ Bet responsibly. Never stake what you cannot afford to lose.
 
 Odds data: {str(odds_data[:3])}"""
 
     elif mode == "combo":
-        return f"""{STYLE}
-You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
-{bankroll_info}
+        return f"""{base_rules}
 
-{stats_summary}
-
-{news_summary}
-
-STRICT RULE: Every combo leg must have maximum odds of 2.00. No leg above 2.00.
-Use real upcoming fixtures and recent form from the data above.
+Build 3 combo bets. ALL legs MUST be 2.00 odds or below. No exceptions.
 
 Format EXACTLY:
 
 🔗 ACE1000 COMBO BETS
-{name}, here are your data-driven combos 🇳🇬
+{name}, your data-driven combos for SportyBet 🇳🇬
 
-📊 Active Strategy: {strategy}
+📊 Strategy: {strategy}
 
 ━━━━━━━━━━━━━━━━━━━━
 COMBO 1 - BANKER 🏦
 Risk: Very Low 🟢
+Every leg max 2.00 odds
 
-Leg 1: [Real Match - Bet @ max 2.00] — [Why based on recent form]
-Leg 2: [Real Match - Bet @ max 2.00] — [Why]
-Leg 3: [Real Match - Bet @ max 2.00] — [Why]
+Leg 1: [Real Match - Bet @ max 2.00] — [One sentence from real data]
+Leg 2: [Real Match - Bet @ max 2.00] — [One sentence]
+Leg 3: [Real Match - Bet @ max 2.00] — [One sentence]
 
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
-Potential Return: [combined odds x {s_combo}]
+Potential Return: [Combined odds x {s_combo}]
 Win Probability: Very High
 
 ━━━━━━━━━━━━━━━━━━━━
 COMBO 2 - BALANCED ⚖️
 Risk: Medium 🟡
+Every leg max 2.00 odds
 
 Leg 1: [Real Match - Bet @ max 2.00] — [Why]
 Leg 2: [Real Match - Bet @ max 2.00] — [Why]
@@ -412,12 +449,13 @@ Leg 3: [Real Match - Bet @ max 2.00] — [Why]
 
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
-Potential Return: [combined odds x {s_combo}]
+Potential Return: [Combined odds x {s_combo}]
 Win Probability: High
 
 ━━━━━━━━━━━━━━━━━━━━
 COMBO 3 - JACKPOT 💥
 Risk: Higher 🔴
+Every leg max 2.00 odds
 
 Leg 1: [Real Match - Bet @ max 2.00] — [Why]
 Leg 2: [Real Match - Bet @ max 2.00] — [Why]
@@ -426,26 +464,62 @@ Leg 4: [Real Match - Bet @ max 2.00] — [Why]
 
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
-Potential Return: [combined odds x {s_combo}]
+Potential Return: [Combined odds x {s_combo}]
 Win Probability: Medium
 
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ Always bet responsibly on SportyBet, {name}!
+⚠️ Bet responsibly on SportyBet, {name}!
+
+Odds data: {str(odds_data[:3])}"""
+
+    elif mode == "soon":
+        return f"""{base_rules}
+
+IMPORTANT: Only analyze the MATCHES KICKING OFF SOON listed above.
+If no matches are kicking off soon say exactly: NO_SOON_MATCHES
+Give fast analysis for immediate betting decisions.
+
+Format EXACTLY:
+
+⚡ ACE1000 LIVE SOON PICKS
+{name}, these games kick off very soon! 🇳🇬
+
+📊 Strategy: {strategy}
+
+━━━━━━━━━━━━━━━━━━━━
+For each match kicking off soon:
+
+⚡ MATCH [number]
+Match: [Home vs Away]
+Kicks Off: [Time]
+Best Bet: [Pick — specify odds range]
+Odds: [Estimated odds]
+Stake: [Appropriate % = Naira amount]
+
+📊 QUICK ANALYSIS:
+Form: [Brief real form summary]
+Key Reason: [One sentence why this bet]
+Confidence: [%]
+
+Risk: [Low/Medium] 🟢🟡
+━━━━━━━━━━━━━━━━━━━━
+
+If 2 or more matches found, add:
+🔗 QUICK COMBO
+[Combine the best 2 picks]
+Combined Odds: [X.XX]
+Stake: 2% = {s_combo}
+Potential Return: [X]
+
+⚠️ Act fast — these kick off soon!
 
 Odds data: {str(odds_data[:3])}"""
 
     else:
-        return f"""{STYLE}
-You are Ace1000, an elite football betting analyst for a Nigerian SportyBet punter named {name}.
-{bankroll_info}
+        return f"""{base_rules}
 
-{stats_summary}
-
-{news_summary}
-
-Using ALL real data above including upcoming fixtures and recent results, give a FULL daily betting card.
-COMBO LEGS: Maximum 2.00 odds per leg. No exceptions.
-Base all analysis on actual data provided.
+Give a FULL daily betting card using real data only.
+STRICT: Safe odds 1.20-1.75. Value odds 1.80-2.50. Combo legs max 2.00.
 
 Format EXACTLY:
 
@@ -456,49 +530,49 @@ Hey {name}! Here are today's best picks 🇳🇬
 {staking["description"]}
 
 ━━━━━━━━━━━━━━━━━━━━
-🛡️ SAFE PICKS (Odds 1.20 - 1.75)
+🛡️ SAFE PICKS (Odds 1.20 - 1.75 STRICTLY)
 
 ✅ SAFE PICK 1
-Match: [Real upcoming match]
-Bet: [Pick]
-Odds: [1.20-1.75]
+Match: [Real match from data]
+Bet: [Pick giving odds 1.20-1.75]
+Odds: [1.20-1.75 ONLY — reject anything above 1.75]
 Stake: {safe_pct*100:.0f}% = {s_safe}
 
-📊 ACE1000 ANALYSIS:
-H2H: [Record]
-Recent Form: [From actual results data]
+📊 ANALYSIS:
+H2H: [Real record]
+Recent Form: [From real results data]
 Key Stat: [Real stat]
-Verdict: [Confident conclusion]
+Verdict: [Confident one sentence]
 
 Risk: Low 🟢
 
 ━━━━━━━━━━━━━━━━━━━━
 ✅ SAFE PICK 2
-Match: [Real upcoming match]
-Bet: [Pick]
-Odds: [1.20-1.75]
+Match: [Real match]
+Bet: [Pick giving odds 1.20-1.75]
+Odds: [1.20-1.75 ONLY]
 Stake: {safe_pct*100:.0f}% = {s_safe}
 
-📊 ACE1000 ANALYSIS:
+📊 ANALYSIS:
 H2H: [Record]
-Recent Form: [Actual results]
+Recent Form: [Real data]
 Key Stat: [Stat]
 Verdict: [Conclusion]
 
 Risk: Low 🟢
 
 ━━━━━━━━━━━━━━━━━━━━
-🎯 VALUE PICK (Odds 1.80 - 2.50)
+🎯 VALUE PICK (Odds 1.80 - 2.50 STRICTLY)
 
 ⭐ VALUE PICK 1
-Match: [Real upcoming match]
-Bet: [Pick]
-Odds: [1.80-2.50]
+Match: [Real match]
+Bet: [Pick giving odds 1.80-2.50]
+Odds: [1.80-2.50 ONLY]
 Stake: {value_pct*100:.0f}% = {s_value}
 
-📊 ACE1000 ANALYSIS:
+📊 ANALYSIS:
 H2H: [Record]
-Recent Form: [Actual results]
+Recent Form: [Real data]
 Key Stat: [Stat]
 Verdict: [Conclusion]
 
@@ -506,7 +580,7 @@ Risk: Medium 🟡
 
 ━━━━━━━━━━━━━━━━━━━━
 🔗 COMBO BETS
-All legs max 2.00 odds only
+RULE: Every leg MUST be 2.00 odds or below. Use Over 1.5 or BTTS if team win odds exceed 2.00.
 
 COMBO 1 - BANKER 🏦
 Leg 1: [Real Match - Bet @ max 2.00] — [Why from real data]
@@ -514,14 +588,14 @@ Leg 2: [Real Match - Bet @ max 2.00] — [Why]
 Leg 3: [Real Match - Bet @ max 2.00] — [Why]
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
-Potential Return: [combined odds x {s_combo}]
+Potential Return: [Combined odds x {s_combo}]
 
 COMBO 2 - VALUE ⭐
 Leg 1: [Real Match - Bet @ max 2.00] — [Why]
 Leg 2: [Real Match - Bet @ max 2.00] — [Why]
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
-Potential Return: [combined odds x {s_combo}]
+Potential Return: [Combined odds x {s_combo}]
 
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ Bet responsibly {name}. Never stake more than you can afford to lose.
@@ -564,7 +638,9 @@ async def home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚽ BETTING PICKS\n"
         f"/odds — Full daily betting card\n"
         f"/safe — Safe picks only (1.20-1.75)\n"
-        f"/combo — Combo bets only\n\n"
+        f"/combo — Combo bets only\n"
+        f"/soon [hours] — Picks for games kicking off soon\n"
+        f"Example: /soon 2 (games in next 2 hours)\n\n"
         f"📝 BET TRACKER\n"
         f"/logbet [match] [pick] [odds] [stake]\n"
         f"Example: /logbet ArsenalvsChelsea Over2.5 1.65 2000\n"
@@ -572,7 +648,7 @@ async def home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/mybets — See all your bets\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 Gemini + Groq powered\n"
-        f"📊 Real stats: football-data.org + TheSportsDB\n"
+        f"📊 football-data.org + TheSportsDB\n"
         f"🇳🇬 Built for SportyBet"
     )
 
@@ -597,12 +673,13 @@ async def view_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Safe Stake: {staking['safe_stake']*100:.0f}% = {format_naira(bankroll * staking['safe_stake'])}\n"
         f"Value Stake: {staking['value_stake']*100:.0f}% = {format_naira(bankroll * staking['value_stake'])}\n"
         f"Combo Stake: 2% = {format_naira(bankroll * 0.02)}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"💡 STRATEGY GUIDE:\n"
         f"Martingale — Never recommended. Catastrophic long term.\n"
-        f"Flat Staking — Safe, sustainable, consistent bettors.\n"
+        f"Flat Staking — Safe and sustainable for consistent bettors.\n"
         f"Kelly Criterion — Optimal when winning consistently.\n"
         f"Defensive — Protects capital during losing streaks.\n\n"
-        f"Ace1000 automatically adjusts as your results change. 🎯"
+        f"Ace1000 adjusts automatically as your results change. 🎯"
     )
 
 async def set_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -775,7 +852,7 @@ async def update_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Pick: {bet['pick']}\n"
                 f"Profit: +{format_naira(profit)}\n"
                 f"New Bankroll: {format_naira(data['bankroll'])}\n\n"
-                f"📊 Strategy Update: {staking['strategy']}\n"
+                f"📊 Strategy: {staking['strategy']}\n"
                 f"Ace1000 delivering! 🔥"
             )
         else:
@@ -792,7 +869,7 @@ async def update_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Pick: {bet['pick']}\n"
                 f"Lost: -{format_naira(bet['stake'])}\n"
                 f"New Bankroll: {format_naira(data['bankroll'])}\n\n"
-                f"📊 Strategy Update: {staking['strategy']}\n"
+                f"📊 Strategy: {staking['strategy']}\n"
                 f"{staking['description']}\n\n"
                 f"Stay disciplined 💪"
             )
@@ -818,7 +895,7 @@ async def my_bets(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
-    await update.message.reply_text(f"🔍 Fetching real stats and team news for you, {name}...")
+    await update.message.reply_text(f"🔍 Fetching real stats for you, {name}...")
     try:
         odds_data = fetch_odds()
         real_stats = fetch_real_stats()
@@ -850,7 +927,7 @@ async def safe_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def combo_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
-    await update.message.reply_text(f"🔗 Building data-driven combos for you, {name}...")
+    await update.message.reply_text(f"🔗 Building combos for you, {name}...")
     try:
         odds_data = fetch_odds()
         real_stats = fetch_real_stats()
@@ -863,15 +940,53 @@ async def combo_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
+async def soon_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    name = data.get("name", "Champ")
+    hours = 2
+    if context.args:
+        try:
+            hours = int(context.args[0])
+            if hours < 1 or hours > 24:
+                hours = 2
+        except:
+            hours = 2
+    await update.message.reply_text(f"⚡ Finding matches kicking off in the next {hours} hour(s), {name}...")
+    try:
+        odds_data = fetch_odds()
+        real_stats = fetch_real_stats()
+        team_news = fetch_team_news()
+        soon_matches = fetch_soon_matches(hours)
+        bankroll = data.get("bankroll", 0)
+        staking = get_staking_strategy(data)
+        prompt = build_odds_prompt(odds_data, real_stats, team_news, bankroll, staking, mode="soon", soon_matches=soon_matches)
+        result = ask_ai(prompt)
+        if "NO_SOON_MATCHES" in result:
+            await update.message.reply_text(
+                f"⚡ No matches found kicking off in the next {hours} hour(s), {name}.\n\n"
+                f"Try /soon 6 for the next 6 hours or /odds for today's full card."
+            )
+        else:
+            await update.message.reply_text(result)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = load_data()
         name = data.get("name", "Champ")
         bankroll = data.get("bankroll", 0)
         staking = get_staking_strategy(data)
-        bankroll_info = f"User: {name}. Bankroll: {format_naira(bankroll)}. Strategy: {staking['strategy']}." if bankroll > 0 else f"User: {name}. No bankroll set."
+        bankroll_info = (
+            f"User: {name}. Bankroll: {format_naira(bankroll)}. Strategy: {staking['strategy']}."
+            if bankroll > 0 else f"User: {name}. No bankroll set yet."
+        )
         user_message = update.message.text
-        prompt = f"{STYLE}\nYou are Ace1000, a smart football betting analyst for a Nigerian SportyBet punter. {bankroll_info}. The user says: {user_message}\n\nAddress them as {name}. Respond helpfully. Reference SportyBet. Be conversational and friendly. No markdown symbols."
+        prompt = (
+            f"{STYLE}\nYou are Ace1000, a sharp football betting analyst for a Nigerian SportyBet punter. "
+            f"{bankroll_info}. The user says: {user_message}\n\n"
+            f"Address them as {name}. Be helpful, friendly, and reference SportyBet. No markdown symbols."
+        )
         result = ask_ai(prompt)
         await update.message.reply_text(result)
     except Exception as e:
@@ -885,7 +1000,10 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         file_bytes = bytes(await file.download_as_bytearray())
-        caption = update.message.caption or f"Analyze these SportyBet odds for {name}. Tell me which are good value, which to avoid, and suggest a combo. No markdown symbols."
+        caption = (
+            update.message.caption or
+            f"Analyze these SportyBet odds for {name}. Which have value? Which to avoid? Suggest a combo. No markdown."
+        )
         result = ask_ai(caption, image_bytes=file_bytes)
         await update.message.reply_text(result)
     except Exception as e:
@@ -960,11 +1078,11 @@ async def value_alert(context: ContextTypes.DEFAULT_TYPE):
         staking = get_staking_strategy(data)
         s_value = format_naira(bankroll * staking["value_stake"]) if bankroll > 0 else "Set bankroll first"
         prompt = f"""{STYLE}
-You are Ace1000. Using ALL the real data below, scan for ONE outstanding value bet.
-Only alert if genuinely good with odds between 1.40-2.50 and clear statistical edge from real data.
-If nothing stands out reply with exactly: NO_ALERT
+You are Ace1000. Scan for ONE outstanding value bet using real data below.
+Only alert if odds are 1.40-2.50 AND there is clear statistical edge from real data.
+If nothing genuinely stands out reply with exactly: NO_ALERT
 
-If you find something use this format:
+Format if found:
 
 🚨 VALUE ALERT, {name}!
 
@@ -973,7 +1091,7 @@ Bet: [Pick]
 Odds: [1.40-2.50]
 Stake: {staking['value_stake']*100:.0f}% = {s_value}
 
-📊 ACE1000 ANALYSIS:
+📊 ANALYSIS:
 H2H: [Real record]
 Recent Form: [From actual results]
 Key Stat: [Real stat]
@@ -1004,6 +1122,7 @@ def main():
     app.add_handler(CommandHandler("odds", get_odds))
     app.add_handler(CommandHandler("safe", safe_picks))
     app.add_handler(CommandHandler("combo", combo_picks))
+    app.add_handler(CommandHandler("soon", soon_picks))
     app.add_handler(CommandHandler("logbet", log_bet))
     app.add_handler(CommandHandler("result", update_result))
     app.add_handler(CommandHandler("mybets", my_bets))
@@ -1011,11 +1130,18 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     job_queue = app.job_queue
-    job_queue.run_daily(morning_briefing, time=datetime.strptime("07:00", "%H:%M").time())
-    job_queue.run_daily(weekly_summary, time=datetime.strptime("20:00", "%H:%M").time(), days=(6,))
+    job_queue.run_daily(
+        morning_briefing,
+        time=datetime.strptime("07:00", "%H:%M").time()
+    )
+    job_queue.run_daily(
+        weekly_summary,
+        time=datetime.strptime("20:00", "%H:%M").time(),
+        days=(6,)
+    )
     job_queue.run_repeating(value_alert, interval=21600, first=60)
 
-    print("🚀 Ace1000Bot is running! Real stats + Team news. Gemini + Groq.")
+    print("🚀 Ace1000Bot is LIVE! Real stats. Smart staking. Gemini + Groq.")
     app.run_polling()
 
 if __name__ == "__main__":
