@@ -122,7 +122,6 @@ def ask_ai(prompt, image_bytes=None):
             raise Exception(f"Both AI failed. Gemini: {gemini_error}. Groq: {groq_error}")
 
 def fetch_todays_odds():
-    today = get_today_str()
     now = get_now_utc()
     end_of_day = now.replace(hour=23, minute=59, second=59)
     all_data = []
@@ -181,7 +180,7 @@ def fetch_upcoming_matches():
             response = requests.get(url, headers=headers, params=params, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                games = data.get("matches", [])[:2]
+                games = data.get("matches", [])[:3]
                 if games:
                     upcoming[comp_name] = [
                         {"home": m["homeTeam"]["name"], "away": m["awayTeam"]["name"],
@@ -254,42 +253,27 @@ def fetch_soon_matches(hours=2):
     return soon
 
 def fetch_live_context():
-    """
-    Fetches all live data needed for conversational AI.
-    Returns a compact summary so the AI knows exactly
-    what is happening in football today.
-    """
     today = get_today_str()
     now = get_now_utc().strftime("%Y-%m-%d %H:%M UTC")
-    context = {"today": today, "now": now, "matches": {}, "standings": {}, "recent_results": [], "odds_snapshot": []}
-
-    # Today's matches
+    context = {"today": today, "now": now, "matches": {}, "standings": {}, "recent_results": [], "odds_snapshot": [], "no_matches_today": False}
     try:
         context["matches"] = fetch_todays_matches()
     except:
         pass
-
-    # If no matches today get upcoming
     if not context["matches"] or sum(len(v) for v in context["matches"].values()) == 0:
         try:
             context["upcoming"] = fetch_upcoming_matches()
             context["no_matches_today"] = True
         except:
             pass
-
-    # Standings
     try:
         context["standings"] = fetch_standings()
     except:
         pass
-
-    # Recent results
     try:
         context["recent_results"] = fetch_recent_results()
     except:
         pass
-
-    # Sample odds
     try:
         now_utc = get_now_utc()
         end_of_day = now_utc.replace(hour=23, minute=59, second=59)
@@ -304,13 +288,11 @@ def fetch_live_context():
         if response.status_code == 200:
             data = response.json()
             context["odds_snapshot"] = [
-                {"match": f"{g['home_team']} vs {g['away_team']}", "sport": g.get("sport_title", ""),
-                 "commence": g.get("commence_time", "")}
+                {"match": f"{g['home_team']} vs {g['away_team']}", "commence": g.get("commence_time", "")}
                 for g in data[:5]
             ]
     except:
         pass
-
     return context
 
 def build_prompt(mode, today_matches, upcoming, standings, recent_results, odds_data, bankroll, staking, soon_matches=None):
@@ -325,46 +307,47 @@ def build_prompt(mode, today_matches, upcoming, standings, recent_results, odds_
     s_value = format_naira(br * value_pct) if br > 0 else "⚠️ Set bankroll!"
     s_combo = format_naira(br * 0.02) if br > 0 else "⚠️ Set bankroll!"
 
-    has_today = bool(today_matches and sum(len(v) for v in today_matches.values()) > 0)
+    no_matches = not today_matches or sum(len(v) for v in today_matches.values()) == 0
 
     time_context = f"""
 CURRENT DATE AND TIME: {now_utc}
 TODAY'S DATE: {today}
-MATCHES AVAILABLE TODAY: {"YES — use ONLY these" if has_today else "NONE — use upcoming matches instead"}
+MATCHES AVAILABLE TODAY: {"YES" if not no_matches else "NO — show upcoming matches instead"}
 """
 
     matches_context = f"""
-TODAY'S MATCHES (ONLY analyze these if available):
-{json.dumps(today_matches, indent=2) if has_today else "NO MATCHES TODAY"}
+TODAY'S MATCHES:
+{json.dumps(today_matches, indent=2) if not no_matches else "NONE TODAY"}
 
-NEXT UPCOMING MATCHES (use ONLY if no matches today):
-{json.dumps(upcoming, indent=2) if not has_today else "NOT NEEDED"}
+UPCOMING MATCHES (use these if no matches today):
+{json.dumps(upcoming, indent=2) if no_matches else "NOT NEEDED"}
 
-LEAGUE STANDINGS:
+STANDINGS:
 {json.dumps(standings, indent=2)}
 
-RECENT RESULTS FOR FORM:
+RECENT RESULTS:
 {json.dumps(recent_results, indent=2)}
 """
 
     rules = f"""
 CRITICAL RULES:
 1. ZERO markdown — no **, ###, *, __ anywhere
-2. TODAY IS {today}. Only analyze matches from TODAY.
-3. If no matches today, use next upcoming match per league.
-4. Safe pick odds: STRICTLY 1.20-1.75. NEVER above 1.75.
-5. Value pick odds: STRICTLY 1.80-2.50.
-6. Combo legs: STRICTLY 2.00 or below.
-7. ONLY use real teams from match data provided.
-8. NEVER invent fixtures or results.
-9. Cover ALL leagues — not just EPL.
-10. Always show exact Naira stake amounts.
-11. Strategy: {strategy}
+2. TODAY IS {today}.
+3. If matches available today analyze TODAY only.
+4. If NO matches today use upcoming fixtures — show their REAL dates clearly.
+5. Safe odds: STRICTLY 1.20-1.75 ONLY.
+6. Value odds: STRICTLY 1.80-2.50 ONLY.
+7. Combo legs: STRICTLY 2.00 or below.
+8. ONLY use real teams from data provided.
+9. NEVER show "Not available" — if no data skip that pick entirely.
+10. NEVER invent fixtures.
+11. Cover ALL leagues — not just EPL.
+12. Always show exact Naira stakes.
 """
 
     bankroll_info = f"""
 Punter: {name}
-Bankroll: {format_naira(br) if br > 0 else "NOT SET"}
+Bankroll: {format_naira(br) if br > 0 else "NOT SET — remind user to do /bankroll"}
 Strategy: {strategy}
 Safe stake: {safe_pct*100:.0f}% = {s_safe}
 Value stake: {value_pct*100:.0f}% = {s_value}
@@ -393,7 +376,7 @@ For each match:
 Kicks Off: [Time UTC]
 Best Bet: [Pick]
 Odds: [Odds]
-Stake: [% = Naira]
+Stake: [% = {s_safe}]
 
 📊 QUICK ANALYSIS:
 Form: [Brief from standings]
@@ -402,7 +385,7 @@ Confidence: [%]
 Risk: [Low/Medium] 🟢🟡
 ━━━━━━━━━━━━━━━━━━━━
 
-If 2 or more matches found add:
+If 2 or more matches:
 🔗 QUICK COMBO
 Leg 1: [Match - Bet @ Odds]
 Leg 2: [Match - Bet @ Odds]
@@ -419,21 +402,23 @@ Potential Return: [X]
 {time_context}
 {matches_context}
 
-Give 3 SAFE picks from TODAY only. Odds strictly 1.20-1.75.
-Cover different leagues. Best bets: Over 1.5, BTTS, Double Chance.
+{"Give 3 SAFE picks from TODAY only." if not no_matches else "No matches today. Give 3 SAFE picks from the upcoming fixtures. Show real match dates."}
+Odds STRICTLY 1.20-1.75. Cover different leagues.
+
+{"" if not no_matches else f"NOTE: These are UPCOMING matches, not today. Show the actual date of each match clearly."}
 
 Format EXACTLY:
 
 🛡️ ACE1000 SAFE PICKS — {today}
-Hey {name}! Low risk picks for today 🇳🇬
+Hey {name}! {"Low risk picks for today" if not no_matches else "No games today — here are upcoming safe picks"} 🇳🇬
 
 📊 Strategy: {strategy}
 
 ━━━━━━━━━━━━━━━━━━━━
 ✅ PICK 1
 League: [Competition]
-Match: [Home vs Away]
-Kickoff: [Time UTC]
+Match: [Real Home vs Away]
+{"Kickoff: [Time UTC]" if not no_matches else "Date: [Actual match date and time]"}
 Bet: [Pick]
 Odds: [1.20-1.75 STRICTLY]
 Confidence: [85-95%]
@@ -442,14 +427,14 @@ Stake: {safe_pct*100:.0f}% = {s_safe}
 📊 ANALYSIS:
 H2H: [Record]
 Form: [Real standings]
-Key Stat: [Stat]
+Key Stat: [Real stat]
 Verdict: [One sentence]
 Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 ✅ PICK 2
 League: [Different competition]
-Match: [Home vs Away]
-Kickoff: [Time UTC]
+Match: [Real Home vs Away]
+{"Kickoff: [Time UTC]" if not no_matches else "Date: [Actual match date and time]"}
 Bet: [Pick]
 Odds: [1.20-1.75 STRICTLY]
 Confidence: [85-95%]
@@ -464,8 +449,8 @@ Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 ✅ PICK 3
 League: [Different competition]
-Match: [Home vs Away]
-Kickoff: [Time UTC]
+Match: [Real Home vs Away]
+{"Kickoff: [Time UTC]" if not no_matches else "Date: [Actual match date and time]"}
 Bet: [Pick]
 Odds: [1.20-1.75 STRICTLY]
 Confidence: [85-95%]
@@ -484,8 +469,7 @@ Combined Odds: [Multiply all 3]
 Stake: 2% = {s_combo}
 Potential Return: [Combined odds x {s_combo}]
 
-⚠️ Bet responsibly. Never stake what you cannot afford to lose.
-Odds reference: {str(odds_data[:3])}"""
+⚠️ Bet responsibly. Never stake what you cannot afford to lose."""
 
     elif mode == "combo":
         return f"""You are Ace1000, elite football analyst for {name} on SportyBet Nigeria.
@@ -494,12 +478,13 @@ Odds reference: {str(odds_data[:3])}"""
 {time_context}
 {matches_context}
 
-Build 3 combo bets from TODAY only. All legs max 2.00 odds. Mix leagues.
+{"Build 3 combos from TODAY only." if not no_matches else "No matches today. Build 3 combos from upcoming fixtures. Show real match dates."}
+All legs max 2.00 odds. Mix leagues.
 
 Format EXACTLY:
 
 🔗 ACE1000 COMBO BETS — {today}
-{name}, your data-driven combos 🇳🇬
+{name}, {"your data-driven combos for today" if not no_matches else "no games today — here are upcoming combos"} 🇳🇬
 
 📊 Strategy: {strategy}
 
@@ -544,10 +529,131 @@ Potential Return: [Combined odds x {s_combo}]
 Win Probability: Medium
 
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ Bet responsibly on SportyBet, {name}!
-Odds reference: {str(odds_data[:3])}"""
+⚠️ Bet responsibly on SportyBet, {name}!"""
 
     else:
+        if no_matches:
+            return f"""You are Ace1000, elite football analyst for {name} on SportyBet Nigeria.
+{rules}
+{bankroll_info}
+{time_context}
+
+NO MATCHES TODAY ({today}).
+Use the UPCOMING MATCHES below. Show their REAL dates clearly.
+NEVER show "Not available". Only show picks that have real match data.
+Cover multiple leagues — not just EPL.
+
+UPCOMING FIXTURES:
+{json.dumps(upcoming, indent=2)}
+
+STANDINGS:
+{json.dumps(standings, indent=2)}
+
+RECENT RESULTS:
+{json.dumps(recent_results, indent=2)}
+
+Format EXACTLY:
+
+📅 ACE1000 UPCOMING PICKS
+No matches today ({today}), {name}. Here are the best upcoming games 🇳🇬
+
+📊 Strategy: {strategy}
+{staking["description"]}
+
+━━━━━━━━━━━━━━━━━━━━
+🛡️ SAFE PICKS (1.20-1.75)
+
+✅ SAFE PICK 1
+League: [Real competition]
+Match: [Real Home vs Away]
+Date: [Actual date e.g. Tuesday 25 Feb]
+Kickoff: [Actual time UTC]
+Bet: [Pick]
+Odds: [1.20-1.75 ONLY]
+Stake: {safe_pct*100:.0f}% = {s_safe}
+
+📊 ANALYSIS:
+H2H: [Real record]
+Form: [Real standings data]
+Key Stat: [Real stat]
+Verdict: [Confident sentence]
+Risk: Low 🟢
+
+━━━━━━━━━━━━━━━━━━━━
+✅ SAFE PICK 2
+League: [Different competition]
+Match: [Real Home vs Away]
+Date: [Actual date]
+Kickoff: [Actual time UTC]
+Bet: [Pick]
+Odds: [1.20-1.75 ONLY]
+Stake: {safe_pct*100:.0f}% = {s_safe}
+
+📊 ANALYSIS:
+H2H: [Record]
+Form: [Real data]
+Key Stat: [Stat]
+Verdict: [Conclusion]
+Risk: Low 🟢
+
+━━━━━━━━━━━━━━━━━━━━
+🎯 VALUE PICKS (1.80-2.50)
+
+⭐ VALUE PICK 1
+League: [Competition]
+Match: [Real Home vs Away]
+Date: [Actual date]
+Kickoff: [Actual time UTC]
+Bet: [Pick]
+Odds: [1.80-2.50 ONLY]
+Stake: {value_pct*100:.0f}% = {s_value}
+
+📊 ANALYSIS:
+H2H: [Record]
+Form: [Real data]
+Key Stat: [Stat]
+Verdict: [Conclusion]
+Risk: Medium 🟡
+
+⭐ VALUE PICK 2
+League: [Different competition]
+Match: [Real Home vs Away]
+Date: [Actual date]
+Kickoff: [Actual time UTC]
+Bet: [Pick]
+Odds: [1.80-2.50 ONLY]
+Stake: {value_pct*100:.0f}% = {s_value}
+
+📊 ANALYSIS:
+H2H: [Record]
+Form: [Real data]
+Key Stat: [Stat]
+Verdict: [Conclusion]
+Risk: Medium 🟡
+
+━━━━━━━━━━━━━━━━━━━━
+🔗 COMBO BETS
+All legs max 2.00. Mix leagues.
+
+COMBO 1 - BANKER 🏦
+Leg 1: [League] [Match] - [Bet] @ [max 2.00] — [Why]
+Leg 2: [League] [Match] - [Bet] @ [max 2.00] — [Why]
+Leg 3: [League] [Match] - [Bet] @ [max 2.00] — [Why]
+Combined Odds: [X.XX]
+Stake: 2% = {s_combo}
+Potential Return: [Combined odds x {s_combo}]
+
+COMBO 2 - VALUE ⭐
+Leg 1: [League] [Match] - [Bet] @ [max 2.00] — [Why]
+Leg 2: [League] [Match] - [Bet] @ [max 2.00] — [Why]
+Leg 3: [League] [Match] - [Bet] @ [max 2.00] — [Why]
+Combined Odds: [X.XX]
+Stake: 2% = {s_combo}
+Potential Return: [Combined odds x {s_combo}]
+
+━━━━━━━━━━━━━━━━━━━━
+⚠️ Bet responsibly {name}. Never stake more than you can afford to lose."""
+
         return f"""You are Ace1000, elite football analyst for {name} on SportyBet Nigeria.
 {rules}
 {bankroll_info}
@@ -555,8 +661,9 @@ Odds reference: {str(odds_data[:3])}"""
 {matches_context}
 
 Give a FULL daily betting card for TODAY ONLY.
-Include matches from ALL available leagues.
+Include matches from ALL available leagues — not just EPL.
 Safe odds 1.20-1.75. Value odds 1.80-2.50. Combo legs max 2.00.
+NEVER show "Not available" — skip a pick entirely if no real data exists.
 
 Format EXACTLY:
 
@@ -571,7 +678,7 @@ Format EXACTLY:
 
 ✅ SAFE PICK 1
 League: [Competition]
-Match: [Home vs Away — TODAY ONLY]
+Match: [Real Home vs Away — TODAY]
 Kickoff: [Time UTC]
 Bet: [Pick]
 Odds: [1.20-1.75 ONLY]
@@ -587,7 +694,7 @@ Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 ✅ SAFE PICK 2
 League: [Different competition]
-Match: [Home vs Away — TODAY ONLY]
+Match: [Real Home vs Away — TODAY]
 Kickoff: [Time UTC]
 Bet: [Pick]
 Odds: [1.20-1.75 ONLY]
@@ -605,7 +712,7 @@ Risk: Low 🟢
 
 ⭐ VALUE PICK 1
 League: [Competition]
-Match: [Home vs Away — TODAY ONLY]
+Match: [Real Home vs Away — TODAY]
 Kickoff: [Time UTC]
 Bet: [Pick]
 Odds: [1.80-2.50 ONLY]
@@ -620,7 +727,7 @@ Risk: Medium 🟡
 
 ⭐ VALUE PICK 2
 League: [Different competition]
-Match: [Home vs Away — TODAY ONLY]
+Match: [Real Home vs Away — TODAY]
 Kickoff: [Time UTC]
 Bet: [Pick]
 Odds: [1.80-2.50 ONLY]
@@ -691,22 +798,22 @@ async def home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/strategy — Active staking strategy\n"
         f"/history — Bankroll history\n\n"
         f"⚽ PICKS\n"
-        f"/odds — Full daily card (today only)\n"
+        f"/odds — Full daily card\n"
         f"/safe — Safe picks only\n"
         f"/combo — Combo bets only\n"
         f"/soon [hours] — Games kicking off soon\n"
         f"Example: /soon 2\n\n"
         f"💬 CHAT\n"
-        f"Just text me anything! Ask about today's games,\n"
-        f"specific teams, or betting advice.\n"
-        f"I have live data so I know what's on today.\n\n"
+        f"Just text me anything!\n"
+        f"Ask about today's games, teams, or advice.\n"
+        f"I have live data.\n\n"
         f"📝 BET TRACKER\n"
         f"/logbet [match] [pick] [odds] [stake]\n"
         f"/result [number] [win/loss]\n"
         f"/mybets — Bet history\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 Gemini + Groq\n"
-        f"📊 Real data: football-data.org + TheSportsDB\n"
+        f"📊 football-data.org + TheSportsDB\n"
         f"🌍 22 leagues covered\n"
         f"🇳🇬 Built for SportyBet"
     )
@@ -911,7 +1018,7 @@ async def get_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     name = data.get("name", "Champ")
     today = get_today_str()
-    await update.message.reply_text(f"🔍 Fetching today's matches ({today}) for you, {name}...")
+    await update.message.reply_text(f"🔍 Fetching matches for {today}, {name}...")
     try:
         odds_data = fetch_todays_odds()
         today_matches = fetch_todays_matches()
@@ -936,7 +1043,7 @@ async def safe_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today_matches = fetch_todays_matches()
         standings = fetch_standings()
         recent = fetch_recent_results()
-        upcoming = fetch_upcoming_matches() if not today_matches else {}
+        upcoming = fetch_upcoming_matches() if not today_matches or sum(len(v) for v in today_matches.values()) == 0 else {}
         bankroll = data.get("bankroll", 0)
         staking = get_staking_strategy(data)
         prompt = build_prompt("safe", today_matches, upcoming, standings, recent, odds_data, bankroll, staking)
@@ -955,7 +1062,7 @@ async def combo_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today_matches = fetch_todays_matches()
         standings = fetch_standings()
         recent = fetch_recent_results()
-        upcoming = fetch_upcoming_matches() if not today_matches else {}
+        upcoming = fetch_upcoming_matches() if not today_matches or sum(len(v) for v in today_matches.values()) == 0 else {}
         bankroll = data.get("bankroll", 0)
         staking = get_staking_strategy(data)
         prompt = build_prompt("combo", today_matches, upcoming, standings, recent, odds_data, bankroll, staking)
@@ -989,7 +1096,7 @@ async def soon_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = ask_ai(prompt)
         if "NO_SOON_MATCHES" in result:
             await update.message.reply_text(
-                f"⚡ No matches kicking off in next {hours} hour(s), {name}.\n\n"
+                f"⚡ No matches in next {hours} hour(s), {name}.\n\n"
                 f"Try /soon 6 or /odds for full day card."
             )
         else:
@@ -998,11 +1105,6 @@ async def soon_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Fully upgraded conversational AI.
-    Now fetches live match data before every response
-    so it knows exactly what is happening in football today.
-    """
     try:
         data = load_data()
         name = data.get("name", "Champ")
@@ -1010,13 +1112,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         staking = get_staking_strategy(data)
         user_message = update.message.text
 
-        # Send typing indicator while fetching data
-        await update.message.reply_text(f"🤔 Checking live data for you, {name}...")
+        await update.message.reply_text(f"🤔 Checking live data, {name}...")
 
-        # Fetch live context for the conversation
         live = fetch_live_context()
 
-        # Build recent bets summary for context
         bets = data.get("bets", [])
         recent_bets = bets[-3:] if bets else []
         won = len([b for b in bets if b.get("result") == "win"])
@@ -1024,21 +1123,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         prompt = f"""You are Ace1000, an elite personal football betting analyst for a Nigerian SportyBet punter named {name}.
 
-You are smart, direct, and genuinely helpful. You talk like a knowledgeable friend who knows football deeply.
+You are sharp, direct, and genuinely helpful. You talk like a knowledgeable friend who knows football deeply.
+You have access to LIVE data right now — use it to give real, accurate answers.
 
-LIVE DATA YOU HAVE ACCESS TO RIGHT NOW:
-Current date and time: {live['now']}
-Today's date: {live['today']}
+LIVE DATA:
+Current time: {live['now']}
+Today: {live['today']}
 
-Today's matches across all leagues:
+Today's matches:
 {json.dumps(live.get('matches', {}), indent=2)}
 
-{"No matches today. Next upcoming: " + json.dumps(live.get('upcoming', {}), indent=2) if live.get('no_matches_today') else ""}
+{"No matches today. Upcoming: " + json.dumps(live.get('upcoming', {}), indent=2) if live.get('no_matches_today') else ""}
 
-League standings:
+Standings:
 {json.dumps(live.get('standings', {}), indent=2)}
 
-Recent results for form:
+Recent results:
 {json.dumps(live.get('recent_results', []), indent=2)}
 
 Odds snapshot:
@@ -1046,24 +1146,23 @@ Odds snapshot:
 
 USER PROFILE:
 Name: {name}
-Bankroll: {format_naira(bankroll) if bankroll > 0 else "Not set yet"}
-Active Strategy: {staking['strategy']}
-Betting record: {won} wins, {lost} losses
-Recent bets: {json.dumps(recent_bets, indent=2) if recent_bets else "No bets logged yet"}
+Bankroll: {format_naira(bankroll) if bankroll > 0 else "Not set — remind them to use /bankroll"}
+Strategy: {staking['strategy']}
+Record: {won} wins, {lost} losses
+Recent bets: {json.dumps(recent_bets) if recent_bets else "None logged yet"}
 
 RULES:
-- Use ZERO markdown symbols — no **, ###, *, __
+- ZERO markdown — no **, ###, *, __
 - Plain text and emojis only
-- Be conversational and friendly but sharp and confident
-- If asked about a specific team or match, use the real data above
-- If asked for picks, reference today's actual fixtures
-- If asked about tomorrow or another day, be honest that you only have live data for today
-- Reference SportyBet naturally
+- Be conversational, sharp, and confident
+- Use real data above when answering about specific teams or matches
+- If asked for picks reference real fixtures from the data
 - Keep responses concise — no walls of text
-- If bankroll not set remind them to use /bankroll
-- Address them as {name}
+- Reference SportyBet naturally
+- If bankroll not set remind them
+- Address them as {name} naturally
 
-User says: {user_message}"""
+User message: {user_message}"""
 
         result = ask_ai(prompt)
         await update.message.reply_text(result)
@@ -1097,12 +1196,12 @@ async def morning_briefing(context: ContextTypes.DEFAULT_TYPE):
         today_matches = fetch_todays_matches()
         standings = fetch_standings()
         recent = fetch_recent_results()
-        upcoming = fetch_upcoming_matches() if not today_matches else {}
+        upcoming = fetch_upcoming_matches() if not today_matches or sum(len(v) for v in today_matches.values()) == 0 else {}
         bankroll = data.get("bankroll", 0)
         staking = get_staking_strategy(data)
         prompt = build_prompt("full", today_matches, upcoming, standings, recent, odds_data, bankroll, staking)
         result = ask_ai(prompt)
-        await context.bot.send_message(chat_id=chat_id, text=f"🌅 Good morning {name}! Here are today's picks ({today}):\n\n{result}")
+        await context.bot.send_message(chat_id=chat_id, text=f"🌅 Good morning {name}! Picks for {today}:\n\n{result}")
     except Exception as e:
         logging.error(f"Morning briefing error: {e}")
 
@@ -1154,22 +1253,22 @@ async def value_alert(context: ContextTypes.DEFAULT_TYPE):
         s_value = format_naira(bankroll * staking["value_stake"]) if bankroll > 0 else "Set bankroll first"
         prompt = f"""You are Ace1000. Today is {today}.
 Scan TODAY's matches ONLY for ONE outstanding value bet with odds 1.40-2.50.
-Only alert if there is genuine statistical edge from the real data.
-If nothing genuinely stands out reply exactly: NO_ALERT
+Only send alert if there is genuine statistical edge from real data.
+If nothing stands out reply exactly: NO_ALERT
 
 Format if found:
 
 🚨 VALUE ALERT, {name}! — {today}
 
 League: [Competition]
-Match: [Home vs Away — TODAY ONLY]
+Match: [Real Home vs Away — TODAY ONLY]
 Kickoff: [Time UTC]
 Bet: [Pick]
 Odds: [1.40-2.50]
 Stake: {staking['value_stake']*100:.0f}% = {s_value}
 
 📊 ANALYSIS:
-Form: [Brief from real data]
+Form: [Brief real data]
 Verdict: [One sentence]
 Risk: [Low/Medium]
 
@@ -1209,7 +1308,7 @@ def main():
     job_queue.run_daily(weekly_summary, time=datetime.strptime("20:00", "%H:%M").time(), days=(6,))
     job_queue.run_repeating(value_alert, interval=21600, first=60)
 
-    print(f"🚀 Ace1000Bot LIVE! {get_today_str()}. Smart conversation. All leagues.")
+    print(f"🚀 Ace1000Bot LIVE! {get_today_str()}. Smart chat. All leagues. No more Not available.")
     app.run_polling()
 
 if __name__ == "__main__":
