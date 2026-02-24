@@ -29,8 +29,7 @@ DATA_FILE = "ace1000_data.json"
 
 _cache = {}
 CACHE_DURATION = 1800
-
-WAT_OFFSET = timedelta(hours=1)  # Nigeria = UTC+1
+WAT_OFFSET = timedelta(hours=1)
 
 def cache_get(key):
     if key in _cache:
@@ -71,14 +70,9 @@ def get_now_wat():
     return get_now_utc() + WAT_OFFSET
 
 def get_today_str():
-    # Today in Nigeria time
     return get_now_wat().strftime("%Y-%m-%d")
 
 def to_wat(utc_str):
-    """
-    Convert a UTC kickoff string to Nigeria time (WAT = UTC+1).
-    Returns a clean readable string like: Tue 24 Feb, 8:45 PM
-    """
     try:
         if not utc_str:
             return "Time TBC"
@@ -88,16 +82,12 @@ def to_wat(utc_str):
             clean = utc_str.strip()[:16]
             dt_utc = datetime.strptime(clean, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
         dt_wat = dt_utc + WAT_OFFSET
-        return dt_wat.strftime("%a %d %b, %I:%M %p")  # e.g. Tue 24 Feb, 08:45 PM
+        return dt_wat.strftime("%a %d %b, %I:%M %p")
     except Exception as e:
         logging.error(f"Time conversion error: {e} for {utc_str}")
-        return utc_str
+        return str(utc_str)
 
 def is_future_match(kickoff_str):
-    """
-    Returns True only if the match has NOT started yet.
-    Adds a 5-minute buffer so matches just starting are excluded.
-    """
     try:
         if not kickoff_str:
             return False
@@ -106,9 +96,7 @@ def is_future_match(kickoff_str):
         else:
             clean = kickoff_str.strip()[:16]
             dt_utc = datetime.strptime(clean, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-        now = get_now_utc()
-        # Only include matches that start at least 5 minutes from now
-        return dt_utc > now + timedelta(minutes=5)
+        return dt_utc > get_now_utc() + timedelta(minutes=5)
     except Exception as e:
         logging.error(f"is_future_match error: {e} for {kickoff_str}")
         return False
@@ -160,29 +148,98 @@ def get_staking_strategy(data):
     else:
         return {"strategy": "CONSERVATIVE FLAT", "description": "Mixed results. Stay conservative. Safe 3%, value 2%.", "safe_stake": 0.03, "value_stake": 0.02, "win_rate": win_rate, "bankroll_ratio": bankroll_ratio}
 
+def summarize_standings(standings):
+    """Convert standings JSON to compact plain text to save tokens."""
+    if not standings:
+        return "No standings data available"
+    lines = []
+    for league, table in standings.items():
+        lines.append(f"{league} top 5:")
+        for t in table[:5]:
+            lines.append(f"  {t['pos']}. {t['team']} — {t['pts']}pts ({t['W']}W {t['D']}D {t['L']}L)")
+    return "\n".join(lines)
+
+def trim_prompt_for_groq(prompt, max_chars=25000):
+    """Trim prompt to fit Groq token limit."""
+    if len(prompt) <= max_chars:
+        return prompt
+    for cutpoint in ["STANDINGS:", "STANDINGS FOR CONTEXT:", "RECENT RESULTS:", "Odds reference:"]:
+        idx = prompt.find(cutpoint)
+        if idx > 0:
+            trimmed = prompt[:idx] + "\n[Data trimmed to fit model limit]"
+            if len(trimmed) <= max_chars:
+                logging.info(f"Prompt trimmed at: {cutpoint}")
+                return trimmed
+    return prompt[:max_chars] + "\n[Truncated]"
+
 def ask_ai(prompt, image_bytes=None):
-    try:
-        if image_bytes:
-            response = gemini_client.models.generate_content(
-                model="gemini-2.0-flash-lite",
-                contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt]
-            )
-        else:
-            response = gemini_client.models.generate_content(
-                model="gemini-2.0-flash-lite", contents=prompt
-            )
-        logging.info("Using Gemini")
-        return response.text
-    except Exception as gemini_error:
-        logging.info(f"Gemini failed, switching to Groq: {gemini_error}")
+    """
+    AI fallback chain:
+    1. Gemini 1.5 Flash (free, higher quota)
+    2. Gemini 2.0 Flash
+    3. Gemini 2.0 Flash Lite
+    4. Groq llama-3.1-8b-instant (trimmed)
+    5. Groq llama-3.3-70b-versatile (trimmed)
+    6. Groq mixtral-8x7b-32768 (trimmed)
+    """
+    gemini_models = [
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+    ]
+    for model in gemini_models:
+        try:
+            if image_bytes:
+                response = gemini_client.models.generate_content(
+                    model=model,
+                    contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt]
+                )
+            else:
+                response = gemini_client.models.generate_content(model=model, contents=prompt)
+            logging.info(f"Gemini success: {model}")
+            return response.text
+        except Exception as e:
+            err = str(e)
+            logging.warning(f"Gemini {model} failed: {err[:120]}")
+            if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
+                continue
+            else:
+                break
+
+    logging.info("All Gemini failed — switching to Groq...")
+    trimmed = trim_prompt_for_groq(prompt)
+    groq_models = [
+        ("llama-3.1-8b-instant", 1500),
+        ("llama-3.3-70b-versatile", 2000),
+        ("mixtral-8x7b-32768", 2000),
+    ]
+    for groq_model, max_tokens in groq_models:
         try:
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}]
+                model=groq_model,
+                messages=[{"role": "user", "content": trimmed}],
+                max_tokens=max_tokens
             )
+            logging.info(f"Groq success: {groq_model}")
             return response.choices[0].message.content
-        except Exception as groq_error:
-            raise Exception(f"Both AI failed. Gemini: {gemini_error}. Groq: {groq_error}")
+        except Exception as e:
+            err = str(e)
+            logging.warning(f"Groq {groq_model} failed: {err[:120]}")
+            if "413" in err or "too large" in err.lower() or "tokens" in err.lower():
+                trimmed = trim_prompt_for_groq(trimmed, max_chars=18000)
+                try:
+                    response = groq_client.chat.completions.create(
+                        model=groq_model,
+                        messages=[{"role": "user", "content": trimmed}],
+                        max_tokens=max_tokens
+                    )
+                    logging.info(f"Groq success after hard trim: {groq_model}")
+                    return response.choices[0].message.content
+                except:
+                    continue
+            continue
+
+    raise Exception("All AI models exhausted. Try again in a few minutes.")
 
 # ============================================================
 # SOURCE 1: API-Football (PRIMARY)
@@ -192,33 +249,24 @@ def fetch_api_football_fixtures(date_str):
     cached = cache_get(f"api_football_{date_str}")
     if cached is not None:
         return cached
-
     if not API_FOOTBALL_KEY:
-        logging.warning("No API_FOOTBALL_KEY found")
+        logging.warning("No API_FOOTBALL_KEY")
         return {}
-
     matches = {}
-    headers = {
-        "x-apisports-key": API_FOOTBALL_KEY,
-        "x-rapidapi-host": "v3.football.api-sports.io"
-    }
-
+    headers = {"x-apisports-key": API_FOOTBALL_KEY, "x-rapidapi-host": "v3.football.api-sports.io"}
     try:
         url = "https://v3.football.api-sports.io/fixtures"
         params = {"date": date_str, "timezone": "UTC"}
         response = requests.get(url, headers=headers, params=params, timeout=20)
         logging.info(f"API-Football status: {response.status_code}")
-
         if response.status_code == 200:
             data = response.json()
             errors = data.get("errors", {})
             if errors:
                 logging.error(f"API-Football errors: {errors}")
                 return {}
-
             fixtures = data.get("response", [])
-            logging.info(f"API-Football: {len(fixtures)} raw fixtures for {date_str}")
-
+            logging.info(f"API-Football: {len(fixtures)} raw fixtures")
             for fixture in fixtures:
                 try:
                     league_name = fixture["league"]["name"]
@@ -227,38 +275,26 @@ def fetch_api_football_fixtures(date_str):
                     away = fixture["teams"]["away"]["name"]
                     kickoff_utc = fixture["fixture"]["date"]
                     status = fixture["fixture"]["status"]["short"]
-
-                    # SKIP matches that have already started or finished
                     if not is_future_match(kickoff_utc):
                         continue
-
-                    # Convert to Nigeria time for display
                     kickoff_wat = to_wat(kickoff_utc)
-
                     key = f"{league_name} ({country})"
                     if key not in matches:
                         matches[key] = []
                     matches[key].append({
-                        "home": home,
-                        "away": away,
-                        "kickoff": kickoff_wat,  # Nigeria time
-                        "kickoff_utc": kickoff_utc,  # Keep raw for filtering
-                        "status": status
+                        "home": home, "away": away,
+                        "kickoff": kickoff_wat, "kickoff_utc": kickoff_utc, "status": status
                     })
                 except Exception as e:
                     logging.error(f"Fixture parse error: {e}")
                     continue
-
             total = sum(len(v) for v in matches.values())
-            logging.info(f"API-Football future matches: {total} across {len(matches)} leagues")
+            logging.info(f"API-Football future matches: {total}")
             cache_set(f"api_football_{date_str}", matches)
-
         else:
-            logging.error(f"API-Football failed: {response.status_code} — {response.text[:200]}")
-
+            logging.error(f"API-Football failed: {response.status_code}")
     except Exception as e:
         logging.error(f"API-Football exception: {e}")
-
     return matches
 
 # ============================================================
@@ -269,7 +305,6 @@ def fetch_football_data_fixtures(date_str):
     cached = cache_get(f"fd_{date_str}")
     if cached is not None:
         return cached
-
     matches = {}
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
     for comp_code, comp_name in FOOTBALL_DATA_COMPS:
@@ -279,24 +314,19 @@ def fetch_football_data_fixtures(date_str):
             response = requests.get(url, headers=headers, params=params, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                todays = data.get("matches", [])
                 future = []
-                for m in todays:
+                for m in data.get("matches", []):
                     kickoff_utc = m.get("utcDate", "")
                     if is_future_match(kickoff_utc):
                         future.append({
-                            "home": m["homeTeam"]["name"],
-                            "away": m["awayTeam"]["name"],
-                            "kickoff": to_wat(kickoff_utc),
-                            "kickoff_utc": kickoff_utc,
-                            "status": "NS"
+                            "home": m["homeTeam"]["name"], "away": m["awayTeam"]["name"],
+                            "kickoff": to_wat(kickoff_utc), "kickoff_utc": kickoff_utc, "status": "NS"
                         })
                 if future:
                     matches[comp_name] = future
         except:
             continue
-
-    logging.info(f"football-data.org future matches: {sum(len(v) for v in matches.values())}")
+    logging.info(f"football-data.org future: {sum(len(v) for v in matches.values())}")
     cache_set(f"fd_{date_str}", matches)
     return matches
 
@@ -308,7 +338,6 @@ def fetch_sportsdb_fixtures(date_str):
     cached = cache_get(f"sdb_{date_str}")
     if cached is not None:
         return cached
-
     matches = {}
     for league_id, league_name in SPORTSDB_LEAGUES:
         try:
@@ -322,56 +351,40 @@ def fetch_sportsdb_fixtures(date_str):
                     kickoff_utc = f"{e.get('dateEvent')} {e.get('strTime', '00:00')}".strip()
                     if is_future_match(kickoff_utc):
                         future.append({
-                            "home": e.get("strHomeTeam"),
-                            "away": e.get("strAwayTeam"),
-                            "kickoff": to_wat(kickoff_utc),
-                            "kickoff_utc": kickoff_utc,
-                            "status": "NS"
+                            "home": e.get("strHomeTeam"), "away": e.get("strAwayTeam"),
+                            "kickoff": to_wat(kickoff_utc), "kickoff_utc": kickoff_utc, "status": "NS"
                         })
                 if future:
                     matches[league_name] = future
         except:
             continue
-
-    logging.info(f"TheSportsDB future matches: {sum(len(v) for v in matches.values())}")
+    logging.info(f"TheSportsDB future: {sum(len(v) for v in matches.values())}")
     cache_set(f"sdb_{date_str}", matches)
     return matches
 
 # ============================================================
-# MASTER FETCH — full fallback chain
+# MASTER FETCH
 # ============================================================
 
 def fetch_all_matches(date_str=None):
     if not date_str:
         date_str = get_today_str()
-
     all_matches = {}
-
-    logging.info(f"Fetching matches for {date_str}...")
-
-    # Source 1: API-Football
     api_matches = fetch_api_football_fixtures(date_str)
     if api_matches:
         all_matches.update(api_matches)
-
-    # Source 2: football-data.org (always add for European depth)
     fd_matches = fetch_football_data_fixtures(date_str)
     for league, games in fd_matches.items():
         if league not in all_matches:
             all_matches[league] = games
-
-    # Source 3: TheSportsDB (only if nothing found)
     if not all_matches:
         logging.info("Falling back to TheSportsDB...")
-        sdb_matches = fetch_sportsdb_fixtures(date_str)
-        all_matches.update(sdb_matches)
-
+        all_matches.update(fetch_sportsdb_fixtures(date_str))
     total = sum(len(v) for v in all_matches.values())
     logging.info(f"TOTAL FUTURE MATCHES for {date_str}: {total} across {len(all_matches)} leagues")
     return all_matches
 
 def fetch_upcoming_matches():
-    """Fetch future matches from next 7 days."""
     upcoming = {}
     now_wat = get_now_wat()
     for days_ahead in range(1, 8):
@@ -389,19 +402,14 @@ def fetch_standings():
     cached = cache_get("standings_all")
     if cached:
         return cached
-
     standings = {}
-
     if API_FOOTBALL_KEY:
         key_leagues = [
             (39, "EPL"), (140, "La Liga"), (135, "Serie A"),
             (78, "Bundesliga"), (61, "Ligue 1"), (71, "Brazil Serie A"),
             (332, "NPFL Nigeria"), (253, "MLS"),
         ]
-        headers = {
-            "x-apisports-key": API_FOOTBALL_KEY,
-            "x-rapidapi-host": "v3.football.api-sports.io"
-        }
+        headers = {"x-apisports-key": API_FOOTBALL_KEY, "x-rapidapi-host": "v3.football.api-sports.io"}
         for league_id, league_name in key_leagues:
             try:
                 url = "https://v3.football.api-sports.io/standings"
@@ -415,13 +423,11 @@ def fetch_standings():
                         standings[league_name] = [
                             {"pos": t["rank"], "team": t["team"]["name"],
                              "W": t["all"]["win"], "D": t["all"]["draw"], "L": t["all"]["lose"],
-                             "GF": t["all"]["goals"]["for"], "GA": t["all"]["goals"]["against"],
-                             "pts": t["points"]}
+                             "GF": t["all"]["goals"]["for"], "GA": t["all"]["goals"]["against"], "pts": t["points"]}
                             for t in table
                         ]
             except:
                 continue
-
     if not standings:
         headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
         for comp_code, comp_name in [("PL", "EPL"), ("PD", "La Liga"), ("SA", "Serie A"), ("BL1", "Bundesliga")]:
@@ -439,7 +445,6 @@ def fetch_standings():
                     ]
             except:
                 continue
-
     cache_set("standings_all", standings)
     return standings
 
@@ -494,8 +499,7 @@ def fetch_todays_odds():
 def fetch_soon_matches(hours=2):
     now_utc = get_now_utc()
     cutoff = now_utc + timedelta(hours=hours)
-    today = get_today_str()
-    all_matches = fetch_all_matches(today)
+    all_matches = fetch_all_matches(get_today_str())
     soon = []
     for league, games in all_matches.items():
         for game in games:
@@ -507,14 +511,10 @@ def fetch_soon_matches(hours=2):
                     match_time = datetime.fromisoformat(kickoff_utc_str.replace("Z", "+00:00"))
                 else:
                     match_time = datetime.strptime(kickoff_utc_str[:16], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                # Only future matches within the window
                 if now_utc + timedelta(minutes=5) < match_time <= cutoff:
                     soon.append({
-                        "home": game["home"],
-                        "away": game["away"],
-                        "kickoff": game["kickoff"],  # Already in Nigeria time
-                        "kickoff_utc": kickoff_utc_str,
-                        "competition": league
+                        "home": game["home"], "away": game["away"],
+                        "kickoff": game["kickoff"], "kickoff_utc": kickoff_utc_str, "competition": league
                     })
             except:
                 continue
@@ -526,8 +526,7 @@ def fetch_live_context():
     context = {
         "today": today, "now": now_wat,
         "matches": {}, "standings": {},
-        "recent_results": [], "odds_snapshot": [],
-        "no_matches_today": False, "total_matches": 0
+        "recent_results": [], "no_matches_today": False, "total_matches": 0
     }
     try:
         context["matches"] = fetch_all_matches(today)
@@ -548,20 +547,15 @@ def fetch_live_context():
         context["recent_results"] = fetch_recent_results()
     except:
         pass
-    try:
-        context["odds_snapshot"] = fetch_todays_odds()[:5]
-    except:
-        pass
     return context
 
-def build_match_list(today_matches):
-    """Build a clean readable match list in Nigeria time."""
+def build_match_list(matches):
     match_list = ""
-    for league, games in today_matches.items():
+    for league, games in matches.items():
         match_list += f"\n{league}:\n"
         for g in games:
             match_list += f"  - {g['home']} vs {g['away']} | {g['kickoff']} (WAT)\n"
-    return match_list
+    return match_list if match_list else "No matches found"
 
 def build_prompt(mode, today_matches, upcoming, standings, recent_results, odds_data, bankroll, staking, soon_matches=None):
     name = get_name()
@@ -578,29 +572,29 @@ def build_prompt(mode, today_matches, upcoming, standings, recent_results, odds_
     no_matches = not today_matches or sum(len(v) for v in today_matches.values()) == 0
     total_matches = sum(len(v) for v in today_matches.values()) if today_matches else 0
 
-    match_list = build_match_list(today_matches) if not no_matches else ""
+    match_list = build_match_list(today_matches) if not no_matches else "NO MATCHES TODAY"
+    upcoming_list = build_match_list(upcoming) if no_matches and upcoming else ""
 
-    upcoming_list = ""
-    if no_matches and upcoming:
-        upcoming_list = build_match_list(upcoming)
+    # Compact standings to save tokens
+    standings_text = summarize_standings(standings)
 
     time_context = f"""
-CURRENT NIGERIA TIME: {now_wat}
-TODAY'S DATE: {today}
-UPCOMING FUTURE MATCHES ONLY (past matches already filtered out): {total_matches} matches
+NIGERIA TIME NOW: {now_wat}
+TODAY: {today}
+FUTURE MATCHES AVAILABLE: {total_matches}
 """
 
     rules = f"""
 ABSOLUTE RULES:
 1. ZERO markdown — no **, ###, *, __
 2. Only use matches from the REAL MATCH LIST below
-3. All times are already in Nigeria time (WAT) — show them exactly as given e.g. Tue 24 Feb, 08:45 PM
-4. NEVER show UTC times or 24-hour times — Nigeria time 12-hour format only
+3. All times are Nigeria time (WAT) — show exactly as given e.g. Tue 24 Feb, 9:00 PM
+4. NEVER use UTC or 24-hour times
 5. Safe odds: STRICTLY 1.20-1.75 ONLY
 6. Value odds: STRICTLY 1.80-2.50 ONLY
 7. Combo legs: STRICTLY 2.00 or below
 8. NEVER show "Not available" — skip pick if no real data
-9. NEVER invent dates, teams, fixtures or scores
+9. NEVER invent fixtures, teams, dates or scores
 10. Always show exact Naira stake amounts
 11. Cover multiple leagues
 """
@@ -619,25 +613,24 @@ Combo stake: 2% = {s_combo}
         if soon_matches:
             for m in soon_matches:
                 soon_list += f"  - {m['home']} vs {m['away']} | {m['competition']} | {m['kickoff']} (WAT)\n"
-
         return f"""You are Ace1000, elite football analyst for {name} on SportyBet Nigeria.
 {rules}
 {bankroll_info}
 {time_context}
 
-MATCHES KICKING OFF SOON (Nigeria time):
+MATCHES KICKING OFF SOON:
 {soon_list if soon_list else "NONE — reply exactly: NO_SOON_MATCHES"}
 
 Format EXACTLY:
 
 ⚡ ACE1000 SOON PICKS
-{name}, these games kick off very soon! 🇳🇬
+{name}, these kick off very soon! 🇳🇬
 
 ━━━━━━━━━━━━━━━━━━━━
 For each match:
 
 ⚡ [Competition] — [Home vs Away]
-Kicks Off: [Exact Nigeria time from list e.g. Tue 24 Feb, 9:00 PM]
+Kicks Off: [Nigeria time from list]
 Best Bet: [Pick]
 Odds: [Estimated odds]
 Stake: [% = Naira]
@@ -649,7 +642,7 @@ Confidence: [%]
 Risk: [Low/Medium] 🟢🟡
 ━━━━━━━━━━━━━━━━━━━━
 
-If 2 or more matches:
+If 2+ matches:
 🔗 QUICK COMBO
 Leg 1: [Match - Bet @ max 2.00]
 Leg 2: [Match - Bet @ max 2.00]
@@ -660,11 +653,11 @@ Potential Return: [X]
 ⚠️ Act fast — these kick off soon!"""
 
     elif mode == "safe":
-        if no_matches:
-            fixture_source = f"UPCOMING FIXTURES (Nigeria time):\n{upcoming_list}" if upcoming_list else "NO FIXTURES AVAILABLE"
-        else:
-            fixture_source = f"TODAY'S FUTURE MATCHES (Nigeria time — all times are WAT):\n{match_list}"
-
+        fixture_source = (
+            f"UPCOMING FIXTURES (Nigeria time):\n{upcoming_list}"
+            if no_matches and upcoming_list
+            else f"TODAY'S FUTURE MATCHES (Nigeria time):\n{match_list}"
+        )
         return f"""You are Ace1000, elite football analyst for {name} on SportyBet Nigeria.
 {rules}
 {bankroll_info}
@@ -673,9 +666,9 @@ Potential Return: [X]
 {fixture_source}
 
 STANDINGS:
-{json.dumps(standings, indent=2)}
+{standings_text}
 
-Give 3 SAFE picks from the match list above only. Odds STRICTLY 1.20-1.75.
+Give 3 SAFE picks from the list above only. Odds STRICTLY 1.20-1.75.
 
 Format EXACTLY:
 
@@ -734,7 +727,7 @@ Verdict: [One sentence]
 Risk: Low 🟢
 ━━━━━━━━━━━━━━━━━━━━
 🔗 SAFE COMBO
-Combine all 3 on SportyBet:
+Combine all 3:
 Combined Odds: [Multiply all 3]
 Stake: 2% = {s_combo}
 Potential Return: [Combined odds x {s_combo}]
@@ -742,11 +735,11 @@ Potential Return: [Combined odds x {s_combo}]
 ⚠️ Bet responsibly. Never stake what you cannot afford to lose."""
 
     elif mode == "combo":
-        if no_matches:
-            fixture_source = f"UPCOMING FIXTURES:\n{upcoming_list}" if upcoming_list else "NO FIXTURES AVAILABLE"
-        else:
-            fixture_source = f"TODAY'S FUTURE MATCHES (Nigeria time):\n{match_list}"
-
+        fixture_source = (
+            f"UPCOMING FIXTURES:\n{upcoming_list}"
+            if no_matches and upcoming_list
+            else f"TODAY'S FUTURE MATCHES (Nigeria time):\n{match_list}"
+        )
         return f"""You are Ace1000, elite football analyst for {name} on SportyBet Nigeria.
 {rules}
 {bankroll_info}
@@ -755,7 +748,7 @@ Potential Return: [Combined odds x {s_combo}]
 {fixture_source}
 
 STANDINGS:
-{json.dumps(standings, indent=2)}
+{standings_text}
 
 Build 3 combos from the list above only. All legs max 2.00. Mix leagues.
 
@@ -773,7 +766,6 @@ Risk: Very Low 🟢
 Leg 1: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
 Leg 2: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
 Leg 3: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
-
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
 Potential Return: [Combined odds x {s_combo}]
@@ -785,7 +777,6 @@ Risk: Medium 🟡
 Leg 1: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
 Leg 2: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
 Leg 3: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
-
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
 Potential Return: [Combined odds x {s_combo}]
@@ -798,7 +789,6 @@ Leg 1: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
 Leg 2: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
 Leg 3: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
 Leg 4: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
-
 Combined Odds: [X.XX]
 Stake: 2% = {s_combo}
 Potential Return: [Combined odds x {s_combo}]
@@ -816,20 +806,17 @@ Potential Return: [Combined odds x {s_combo}]
 NO REMAINING MATCHES TODAY ({today}).
 
 UPCOMING FIXTURES — ONLY USE THESE:
-{upcoming_list if upcoming_list else "NO UPCOMING FIXTURES IN DATA"}
+{upcoming_list if upcoming_list else "NO UPCOMING FIXTURES FOUND"}
 
 STANDINGS:
-{json.dumps(standings, indent=2)}
+{standings_text}
 
-RECENT RESULTS:
-{json.dumps(recent_results, indent=2)}
-
-Show real upcoming fixtures only. Show Nigeria time exactly as given. Never invent matches.
+Show real upcoming fixtures only. Never invent matches. Show Nigeria time exactly as given.
 
 Format EXACTLY:
 
 📅 ACE1000 UPCOMING PICKS
-No more matches today, {name}. Here are the best upcoming games 🇳🇬
+No more matches today, {name}. Best upcoming games 🇳🇬
 
 📊 Strategy: {strategy}
 {staking["description"]}
@@ -928,24 +915,21 @@ Potential Return: [Combined odds x {s_combo}]
 {bankroll_info}
 {time_context}
 
-TODAY'S REMAINING FUTURE MATCHES (Nigeria time — WAT):
+TODAY'S REMAINING FUTURE MATCHES (Nigeria time):
 {match_list}
 
 STANDINGS:
-{json.dumps(standings, indent=2)}
-
-RECENT RESULTS:
-{json.dumps(recent_results, indent=2)}
+{standings_text}
 
 {total_matches} future matches today across {len(today_matches)} leagues.
-Pick best value. Safe 1.20-1.75. Value 1.80-2.50. Combo legs max 2.00.
+Best value picks. Safe 1.20-1.75. Value 1.80-2.50. Combo legs max 2.00.
 Only use exact matches from the list. Show Nigeria time as given.
 
 Format EXACTLY:
 
 🎯 ACE1000 DAILY BETTING CARD
 {today} — Hey {name}! 🇳🇬
-{total_matches} matches remaining today across {len(today_matches)} leagues
+{total_matches} matches remaining today
 
 📊 Strategy: {strategy}
 {staking["description"]}
@@ -956,7 +940,7 @@ Format EXACTLY:
 ✅ SAFE PICK 1
 League: [From list]
 Match: [Exact teams from list]
-Kickoff: [Exact Nigeria time e.g. Tue 24 Feb, 9:00 PM]
+Kickoff: [Exact Nigeria time]
 Bet: [Pick]
 Odds: [1.20-1.75 ONLY]
 Stake: {safe_pct*100:.0f}% = {s_safe}
@@ -1019,7 +1003,6 @@ Risk: Medium 🟡
 
 ━━━━━━━━━━━━━━━━━━━━
 🔗 COMBO BETS
-All legs max 2.00. Mix leagues.
 
 COMBO 1 - BANKER 🏦
 Leg 1: [League] [Exact match] - [Bet] @ [max 2.00] | [Nigeria time]
@@ -1038,8 +1021,7 @@ Stake: 2% = {s_combo}
 Potential Return: [Combined odds x {s_combo}]
 
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ Bet responsibly {name}. Never stake more than you can afford to lose.
-Odds reference: {str(odds_data[:3])}"""
+⚠️ Bet responsibly {name}. Never stake more than you can afford to lose."""
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
@@ -1085,7 +1067,7 @@ async def home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/soon [hours] — Games kicking off soon\n\n"
         f"💬 CHAT\n"
         f"Just text me anything!\n"
-        f"I have live data from 1000+ leagues.\n\n"
+        f"Live data from 1000+ leagues.\n\n"
         f"📝 BET TRACKER\n"
         f"/logbet [match] [pick] [odds] [stake]\n"
         f"/result [number] [win/loss]\n"
@@ -1121,7 +1103,7 @@ async def view_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Combo Stake: 2% = {format_naira(bankroll * 0.02)}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"STRATEGY GUIDE:\n"
-        f"Martingale — Never recommended. Catastrophic.\n"
+        f"Martingale — Never recommended.\n"
         f"Flat Staking — Safe and sustainable.\n"
         f"Kelly Criterion — Best when winning consistently.\n"
         f"Defensive — Protects capital in losing streaks.\n\n"
@@ -1137,7 +1119,7 @@ async def set_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["name"] = name
     data["chat_id"] = update.effective_chat.id
     save_data(data)
-    await update.message.reply_text(f"✅ Done! I'll call you {name} from now on. 🎯\nUse /home to see all commands.")
+    await update.message.reply_text(f"✅ Done! I'll call you {name} from now on. 🎯")
 
 async def set_bankroll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -1153,7 +1135,9 @@ async def set_bankroll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["chat_id"] = update.effective_chat.id
         if data["initial_bankroll"] == 0:
             data["initial_bankroll"] = amount
-        data["bankroll_history"].append({"date": datetime.now().strftime("%Y-%m-%d %I:%M %p"), "amount": amount})
+        data["bankroll_history"].append({
+            "date": get_now_wat().strftime("%Y-%m-%d %I:%M %p"), "amount": amount
+        })
         save_data(data)
         name = data.get("name", "Champ")
         staking = get_staking_strategy(data)
@@ -1222,10 +1206,9 @@ async def log_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         match, pick = context.args[0], context.args[1]
         odds, stake = float(context.args[2]), float(context.args[3])
         data = load_data()
-        now_wat = get_now_wat().strftime("%Y-%m-%d %I:%M %p")
         bet = {
             "id": len(data["bets"]) + 1,
-            "date": now_wat,
+            "date": get_now_wat().strftime("%Y-%m-%d %I:%M %p"),
             "match": match, "pick": pick, "odds": odds, "stake": stake,
             "potential": odds * stake, "result": "pending"
         }
@@ -1263,8 +1246,9 @@ async def update_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["bankroll"] = bankroll + profit
         else:
             data["bankroll"] = max(0, bankroll - bet["stake"])
-        now_wat = get_now_wat().strftime("%Y-%m-%d %I:%M %p")
-        data["bankroll_history"].append({"date": now_wat, "amount": data["bankroll"]})
+        data["bankroll_history"].append({
+            "date": get_now_wat().strftime("%Y-%m-%d %I:%M %p"), "amount": data["bankroll"]
+        })
         save_data(data)
         staking = get_staking_strategy(data)
         if result == "win":
@@ -1398,26 +1382,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bankroll = data.get("bankroll", 0)
         staking = get_staking_strategy(data)
         user_message = update.message.text
-
         now_wat = get_now_wat().strftime("%I:%M %p WAT")
         await update.message.reply_text(f"🤔 Checking live data ({now_wat}), {name}...")
-
         live = fetch_live_context()
         bets = data.get("bets", [])
         recent_bets = bets[-3:] if bets else []
         won = len([b for b in bets if b.get("result") == "win"])
         lost = len([b for b in bets if b.get("result") == "loss"])
-
         match_summary = ""
         if live.get("matches") and live["total_matches"] > 0:
             match_summary = build_match_list(live["matches"])
         elif live.get("upcoming"):
             match_summary = "No matches today. Upcoming:\n" + build_match_list(live["upcoming"])
-
+        standings_text = summarize_standings(live.get("standings", {}))
         prompt = f"""You are Ace1000, elite personal football betting analyst for {name} on SportyBet Nigeria.
-
-Sharp, direct, knowledgeable. You know football worldwide. You have LIVE data right now.
-All times are in Nigeria time (WAT = UTC+1).
+Sharp, direct, knowledgeable. All times are Nigeria time (WAT).
 
 LIVE DATA:
 Nigeria time now: {live['now']}
@@ -1425,13 +1404,10 @@ Today: {live['today']}
 Total upcoming matches today: {live.get('total_matches', 0)}
 
 REAL UPCOMING MATCHES (Nigeria time):
-{match_summary if match_summary else "No upcoming matches found right now"}
+{match_summary if match_summary else "No upcoming matches found"}
 
 STANDINGS:
-{json.dumps(live.get('standings', {}), indent=2)}
-
-RECENT RESULTS:
-{json.dumps(live.get('recent_results', []), indent=2)}
+{standings_text}
 
 USER:
 Name: {name}
@@ -1451,10 +1427,8 @@ RULES:
 - Address them as {name}
 
 User says: {user_message}"""
-
         result = ask_ai(prompt)
         await update.message.reply_text(result)
-
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
@@ -1492,7 +1466,7 @@ async def morning_briefing(context: ContextTypes.DEFAULT_TYPE):
         result = ask_ai(prompt)
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"🌅 Good morning {name}! {total} matches today. All times in Nigeria time 🇳🇬\n\n{result}"
+            text=f"🌅 Good morning {name}! {total} matches today 🇳🇬\n\n{result}"
         )
     except Exception as e:
         logging.error(f"Morning briefing error: {e}")
@@ -1539,27 +1513,29 @@ async def value_alert(context: ContextTypes.DEFAULT_TYPE):
     try:
         today_matches = fetch_all_matches(today)
         standings = fetch_standings()
-        odds_data = fetch_todays_odds()
         bankroll = data.get("bankroll", 0)
         staking = get_staking_strategy(data)
         s_value = format_naira(bankroll * staking["value_stake"]) if bankroll > 0 else "Set bankroll first"
         match_list = build_match_list(today_matches) if today_matches else "NO MATCHES"
         total = sum(len(v) for v in today_matches.values()) if today_matches else 0
-
-        prompt = f"""You are Ace1000. Today is {today}. Nigeria time now: {get_now_wat().strftime("%I:%M %p WAT")}.
-Scan the real upcoming matches below for ONE outstanding value bet with odds 1.40-2.50.
+        standings_text = summarize_standings(standings)
+        prompt = f"""You are Ace1000. Nigeria time: {get_now_wat().strftime("%I:%M %p WAT")}. Today: {today}.
+Scan real upcoming matches for ONE outstanding value bet with odds 1.40-2.50.
 Only alert if genuine edge exists. Only use matches from the list.
 If nothing stands out reply exactly: NO_ALERT
 
 REAL UPCOMING MATCHES ({total} total — Nigeria time):
 {match_list}
 
+STANDINGS:
+{standings_text}
+
 Format if found:
 🚨 VALUE ALERT, {name}! — {today}
 
 League: [Real competition]
 Match: [Exact teams from list]
-Kickoff: [Exact Nigeria time from list]
+Kickoff: [Exact Nigeria time]
 Bet: [Pick]
 Odds: [1.40-2.50]
 Stake: {staking['value_stake']*100:.0f}% = {s_value}
@@ -1569,9 +1545,7 @@ Form: [Real data]
 Verdict: [One sentence]
 Risk: [Low/Medium]
 
-No markdown.
-Standings: {json.dumps(standings)}"""
-
+No markdown."""
         result = ask_ai(prompt)
         if "NO_ALERT" not in result:
             await context.bot.send_message(chat_id=chat_id, text=result)
@@ -1580,7 +1554,6 @@ Standings: {json.dumps(standings)}"""
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("home", home))
     app.add_handler(CommandHandler("setname", set_name))
@@ -1597,13 +1570,11 @@ def main():
     app.add_handler(CommandHandler("mybets", my_bets))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
     job_queue = app.job_queue
     job_queue.run_daily(morning_briefing, time=datetime.strptime("07:00", "%H:%M").time())
     job_queue.run_daily(weekly_summary, time=datetime.strptime("20:00", "%H:%M").time(), days=(6,))
     job_queue.run_repeating(value_alert, interval=21600, first=60)
-
-    print(f"🚀 Ace1000Bot LIVE! {get_today_str()} | {get_now_wat().strftime('%I:%M %p WAT')} | Future matches only | Nigeria time throughout")
+    print(f"🚀 Ace1000Bot LIVE! {get_today_str()} | {get_now_wat().strftime('%I:%M %p WAT')} | Free AI only | Nigeria time")
     app.run_polling()
 
 if __name__ == "__main__":
